@@ -8,15 +8,23 @@ import {
 // HELPERS
 // ═══════════════════════════════════════════════════════════════
 
-/** Build the full track by repeating Silverstone corners with sine-smoothed curves */
+/** Build the full track by repeating Silverstone corners.
+ *  Uses a plateau envelope: quick ramp in (20%), full curve (60%), quick ramp out (20%).
+ *  This makes corners feel like distinct turns rather than gentle sine waves. */
 function buildTrackSegments() {
   const segments = [];
   for (let rep = 0; rep < 5; rep++) {
     for (const corner of SILVERSTONE_CORNERS) {
       for (let i = 0; i < corner.length; i++) {
-        const progress = i / corner.length;
-        const curveAtPoint = corner.curve * Math.sin(progress * Math.PI);
-        segments.push({ curve: curveAtPoint, cornerName: corner.name });
+        const t = i / corner.length;
+        // Plateau envelope: ramp in first 20%, full intensity 20-80%, ramp out last 20%
+        let envelope;
+        if (t < 0.2) envelope = t / 0.2;           // ramp in
+        else if (t > 0.8) envelope = (1 - t) / 0.2; // ramp out
+        else envelope = 1.0;                         // full intensity
+        // Smooth the transitions slightly
+        envelope = envelope * envelope * (3 - 2 * envelope); // smoothstep
+        segments.push({ curve: corner.curve * envelope, cornerName: corner.name });
       }
     }
   }
@@ -467,15 +475,16 @@ export default function App() {
         g.speed += (g.targetSpeed - g.speed) * lerpRate;
         g.speed = Math.max(0.05, g.speed);
 
-        // Slow down in corners — read current segment curve intensity
+        // Slow down in corners — lerp toward a corner-appropriate speed
         const curSegIdx = Math.floor(g.position) % g.segments.length;
         const curSeg = g.segments[curSegIdx];
         const curveIntensity = Math.abs(curSeg ? curSeg.curve : 0);
-        // Scale: curve > 20 starts slowing, curve 60+ is heavy braking
-        if (curveIntensity > 15 && g.boostTimer <= 0) {
-          const brakeFactor = Math.min(0.6, (curveIntensity - 15) * 0.012);
-          g.speed *= (1 - brakeFactor);
-          g.speed = Math.max(0.4, g.speed);
+        if (curveIntensity > 20 && g.boostTimer <= 0) {
+          // Target speed: full speed on straights, down to 0.5 on tight corners (curve 120)
+          const cornerSpeed = Math.max(0.5, TUNING.BASE_SPEED * (1 - curveIntensity * 0.005));
+          if (g.speed > cornerSpeed) {
+            g.speed += (cornerSpeed - g.speed) * 0.08; // smooth braking
+          }
         }
 
         // Advance position
@@ -792,64 +801,87 @@ export default function App() {
           }
         }
 
-        // ── AI CARS (drawn at their depth in the scene) ──
-        g.aiCars.forEach(car => {
-          if (car.segmentsAhead < 2 || car.segmentsAhead >= DRAW_DISTANCE - 2) return;
-          // Draw this car when the current strip matches its depth
-          const carDrawIdx = Math.round(car.segmentsAhead);
-          if (far.drawOrder !== carDrawIdx) return;
-
-          // Car width proportional to road width at this depth, with minimum size
-          const carWidth = Math.max(8, far.w * 0.14);
-          if (far.y < horizon + 3) return;
-          const carHeight = carWidth * 0.45;
-          const carX = far.x + car.lane * far.w * 0.35;
-          const carY = far.y;
-          const bob = Math.sin(car.bobPhase) * 0.6;
-
-          // Shadow
-          ctx.fillStyle = "rgba(0,0,0,0.25)";
-          ctx.beginPath();
-          ctx.ellipse(carX, carY + bob + 1, carWidth * 0.4, carHeight * 0.08, 0, 0, Math.PI * 2);
-          ctx.fill();
-
-          // Rear wing
-          ctx.fillStyle = car.color;
-          ctx.fillRect(carX - carWidth * 0.52, carY - carHeight - carHeight * 0.1 + bob, carWidth * 1.04, carHeight * 0.09);
-          // Endplates
-          ctx.fillStyle = "#1a1a1a";
-          ctx.fillRect(carX - carWidth * 0.55, carY - carHeight - carHeight * 0.14 + bob, carWidth * 0.05, carHeight * 0.15);
-          ctx.fillRect(carX + carWidth * 0.5, carY - carHeight - carHeight * 0.14 + bob, carWidth * 0.05, carHeight * 0.15);
-
-          // Body (tapered rear view)
-          ctx.fillStyle = car.color;
-          ctx.beginPath();
-          ctx.moveTo(carX - carWidth * 0.36, carY + bob);
-          ctx.lineTo(carX - carWidth * 0.42, carY - carHeight * 0.5 + bob);
-          ctx.lineTo(carX - carWidth * 0.22, carY - carHeight + bob);
-          ctx.lineTo(carX + carWidth * 0.22, carY - carHeight + bob);
-          ctx.lineTo(carX + carWidth * 0.42, carY - carHeight * 0.5 + bob);
-          ctx.lineTo(carX + carWidth * 0.36, carY + bob);
-          ctx.fill();
-
-          // Rear light strip
-          ctx.fillStyle = "#ff1a1a";
-          ctx.fillRect(carX - carWidth * 0.1, carY - carHeight * 0.18 + bob, carWidth * 0.2, Math.max(1, carHeight * 0.05));
-
-          // Rear wheels
-          ctx.fillStyle = "#080808";
-          ctx.fillRect(carX - carWidth * 0.5, carY - carHeight * 0.45 + bob, carWidth * 0.08, carHeight * 0.4);
-          ctx.fillRect(carX + carWidth * 0.42, carY - carHeight * 0.45 + bob, carWidth * 0.08, carHeight * 0.4);
-
-          // Name label
-          if (carWidth > 15) {
-            ctx.font = `bold ${Math.max(7, Math.floor(carWidth * 0.18))}px monospace`;
-            ctx.fillStyle = `rgba(255,255,255,${Math.min(0.65, carWidth / 60)})`;
-            ctx.textAlign = "center";
-            ctx.fillText(car.name, carX, carY - carHeight - carHeight * 0.2 + bob);
-          }
-        });
       }
+
+      // ─── AI CARS (drawn after road, using lookup into projected array) ───
+      // Build a drawOrder→projected index map for fast lookup
+      const projByOrder = {};
+      projected.forEach((p, idx) => { projByOrder[p.drawOrder] = idx; });
+
+      // Sort cars back-to-front (furthest first) so closer cars draw on top
+      const sortedCars = [...g.aiCars]
+        .filter(car => car.segmentsAhead >= 2 && car.segmentsAhead < DRAW_DISTANCE - 2)
+        .sort((a, b) => b.segmentsAhead - a.segmentsAhead);
+
+      sortedCars.forEach(car => {
+        const carDrawIdx = Math.round(car.segmentsAhead);
+        const pIdx = projByOrder[carDrawIdx];
+        if (pIdx === undefined) return;
+        const p = projected[pIdx];
+        if (!p || p.y < horizon + 3) return;
+
+        // Car size: proportional to road width at this depth, minimum 12px
+        const carWidth = Math.max(12, p.w * 0.16);
+        const carHeight = carWidth * 0.45;
+        const carX = p.x + car.lane * p.w * 0.35;
+        const carY = p.y;
+        const bob = Math.sin(car.bobPhase) * 0.5;
+
+        // Shadow
+        ctx.fillStyle = "rgba(0,0,0,0.3)";
+        ctx.beginPath();
+        ctx.ellipse(carX, carY + bob + 1, carWidth * 0.45, carHeight * 0.1, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Rear wing
+        ctx.fillStyle = car.color;
+        ctx.fillRect(carX - carWidth * 0.52, carY - carHeight - carHeight * 0.12 + bob, carWidth * 1.04, carHeight * 0.1);
+        // Endplates
+        ctx.fillStyle = "#1a1a1a";
+        ctx.fillRect(carX - carWidth * 0.56, carY - carHeight - carHeight * 0.16 + bob, carWidth * 0.06, carHeight * 0.18);
+        ctx.fillRect(carX + carWidth * 0.50, carY - carHeight - carHeight * 0.16 + bob, carWidth * 0.06, carHeight * 0.18);
+
+        // Body (tapered rear view)
+        ctx.fillStyle = car.color;
+        ctx.beginPath();
+        ctx.moveTo(carX - carWidth * 0.36, carY + bob);
+        ctx.lineTo(carX - carWidth * 0.42, carY - carHeight * 0.5 + bob);
+        ctx.lineTo(carX - carWidth * 0.22, carY - carHeight + bob);
+        ctx.lineTo(carX + carWidth * 0.22, carY - carHeight + bob);
+        ctx.lineTo(carX + carWidth * 0.42, carY - carHeight * 0.5 + bob);
+        ctx.lineTo(carX + carWidth * 0.36, carY + bob);
+        ctx.fill();
+
+        // Darker lower body
+        ctx.fillStyle = "rgba(0,0,0,0.3)";
+        ctx.beginPath();
+        ctx.moveTo(carX - carWidth * 0.36, carY + bob);
+        ctx.lineTo(carX - carWidth * 0.39, carY - carHeight * 0.25 + bob);
+        ctx.lineTo(carX + carWidth * 0.39, carY - carHeight * 0.25 + bob);
+        ctx.lineTo(carX + carWidth * 0.36, carY + bob);
+        ctx.fill();
+
+        // Rear light strip
+        ctx.fillStyle = "#ff1a1a";
+        const lightW = Math.max(2, carWidth * 0.2);
+        const lightH = Math.max(1, carHeight * 0.06);
+        ctx.fillRect(carX - lightW / 2, carY - carHeight * 0.2 + bob, lightW, lightH);
+
+        // Rear wheels
+        const wheelW = Math.max(2, carWidth * 0.09);
+        const wheelH = Math.max(3, carHeight * 0.45);
+        ctx.fillStyle = "#080808";
+        ctx.fillRect(carX - carWidth * 0.52, carY - carHeight * 0.5 + bob, wheelW, wheelH);
+        ctx.fillRect(carX + carWidth * 0.52 - wheelW, carY - carHeight * 0.5 + bob, wheelW, wheelH);
+
+        // Name label
+        if (carWidth > 14) {
+          ctx.font = `bold ${Math.max(8, Math.floor(carWidth * 0.2))}px monospace`;
+          ctx.fillStyle = "#fff";
+          ctx.textAlign = "center";
+          ctx.fillText(car.name, carX, carY - carHeight - carHeight * 0.25 + bob);
+        }
+      });
 
       // ─── SPEED STREAKS ───
       if (g.speed > 0.7) {
@@ -999,12 +1031,17 @@ export default function App() {
       ctx.fillRect(W * 0.87, mirrorY, mirrorW, mirrorH);
       ctx.fillStyle = "#304060";
       ctx.fillRect(W * 0.87 + 1, mirrorY + 1, mirrorW - 2, mirrorH - 2);
-      // Mirror reflections
+      // Mirror reflections — show cars behind the player
       g.aiCars.forEach(car => {
-        if (car.segmentsAhead < 2) {
-          const mx = car.lane < 0 ? W * 0.13 - mirrorW + 3 : W * 0.87 + 3;
+        if (car.segmentsAhead < 3) {
+          // Car behind or very close — show in mirrors
+          // Left mirror if car is on the left, right mirror if on the right
+          const inLeftMirror = car.lane <= 0;
+          const mx = inLeftMirror ? W * 0.13 - mirrorW + 2 : W * 0.87 + 2;
+          // Size based on closeness — closer car = bigger reflection
+          const closeness = Math.max(1, 4 - Math.abs(car.segmentsAhead));
           ctx.fillStyle = car.color;
-          ctx.fillRect(mx, mirrorY + 3, 4, 2);
+          ctx.fillRect(mx, mirrorY + 2, Math.min(mirrorW - 4, closeness * 3), Math.min(mirrorH - 4, closeness * 2));
         }
       });
 
