@@ -44,7 +44,7 @@ function positionText(p) {
 class SoundEngine {
   constructor() {
     this.ctx = null;
-    this.oscs = [];       // V10 harmonic oscillators
+    this.oscs = [];       // V8 harmonic oscillators
     this.gains = [];      // per-oscillator gains
     this.masterGain = null;
     this.started = false;
@@ -64,15 +64,15 @@ class SoundEngine {
       this.masterGain.connect(compressor);
       compressor.connect(this.ctx.destination);
 
-      // V10 engine: multiple harmonics with different waveforms
-      // Fundamental + overtones that create the screaming V10 character
+      // V8 engine: deep, bassy rumble with low-end grunt
+      // Lower fundamental, heavy sub-harmonics, less high-end scream
       const harmonics = [
-        { mult: 1.0, type: "sawtooth", vol: 0.30 },  // fundamental
-        { mult: 2.0, type: "sawtooth", vol: 0.20 },  // 2nd harmonic — the scream
-        { mult: 3.0, type: "square",   vol: 0.10 },  // 3rd — adds edge
-        { mult: 4.0, type: "sawtooth", vol: 0.08 },  // 4th — high-end buzz
-        { mult: 0.5, type: "sawtooth", vol: 0.15 },  // sub-harmonic — rumble
-        { mult: 5.0, type: "sine",     vol: 0.05 },  // 5th — shimmer
+        { mult: 0.5, type: "sawtooth", vol: 0.28 },  // deep sub-bass rumble
+        { mult: 1.0, type: "sawtooth", vol: 0.25 },  // fundamental — the core growl
+        { mult: 1.5, type: "triangle", vol: 0.12 },  // gives V8 uneven-firing character
+        { mult: 2.0, type: "sawtooth", vol: 0.10 },  // 2nd harmonic — warmth
+        { mult: 0.25,type: "sine",     vol: 0.18 },  // ultra-low rumble you feel
+        { mult: 3.0, type: "sine",     vol: 0.04 },  // gentle upper harmonic
       ];
 
       harmonics.forEach(h => {
@@ -95,10 +95,10 @@ class SoundEngine {
   updateEngine(speed) {
     if (!this.started) return;
     const t = this.ctx.currentTime;
-    // Map speed to RPM-like frequency: idle ~120Hz, redline ~650Hz
-    const baseFreq = 120 + speed * 350;
+    // Map speed to RPM-like frequency: idle ~70Hz, redline ~320Hz (deep V8 range)
+    const baseFreq = 70 + speed * 170;
     // Volume ramps up with speed, caps at reasonable level
-    const vol = Math.min(0.14, speed * 0.07);
+    const vol = Math.min(0.12, speed * 0.06);
 
     this.masterGain.gain.setTargetAtTime(vol, t, 0.03);
 
@@ -410,6 +410,17 @@ export default function App() {
         const lerpRate = isQuestion ? 0.003 : 0.015;
         g.speed += (g.targetSpeed - g.speed) * lerpRate;
         g.speed = Math.max(0.05, g.speed);
+
+        // Slow down in corners — read current segment curve intensity
+        const curSegIdx = Math.floor(g.position) % g.segments.length;
+        const curSeg = g.segments[curSegIdx];
+        const curveIntensity = Math.abs(curSeg ? curSeg.curve : 0);
+        // Scale: curve > 20 starts slowing, curve 60+ is heavy braking
+        if (curveIntensity > 15 && g.boostTimer <= 0) {
+          const brakeFactor = Math.min(0.6, (curveIntensity - 15) * 0.012);
+          g.speed *= (1 - brakeFactor);
+          g.speed = Math.max(0.4, g.speed);
+        }
 
         // Advance position
         g.position += g.speed;
@@ -723,15 +734,15 @@ export default function App() {
           }
         }
 
-        // ── AI CARS (drawn when we reach their segment) ──
+        // ── AI CARS (drawn at their depth in the scene) ──
         g.aiCars.forEach(car => {
-          const carSeg = Math.round(car.segmentsAhead);
-          if (carSeg !== far.drawOrder || carSeg < 2) return;
-          // Only draw if within draw distance
-          if (carSeg >= DRAW_DISTANCE - 1) return;
+          if (car.segmentsAhead < 3 || car.segmentsAhead >= DRAW_DISTANCE - 2) return;
+          // Draw this car when the current strip matches its depth
+          const carDrawIdx = Math.round(car.segmentsAhead);
+          if (far.drawOrder !== carDrawIdx) return;
 
-          const carWidth = far.w * 0.08;
-          if (carWidth < 2 || far.y < horizon + 5) return;
+          const carWidth = far.w * 0.10;  // slightly larger for visibility
+          if (carWidth < 3 || far.y < horizon + 5) return;
           const carHeight = carWidth * 0.42;
           const carX = far.x + car.lane * far.w * 0.38;
           const carY = far.y;
@@ -830,194 +841,159 @@ export default function App() {
         );
       }
 
-      // ─── COCKPIT OVERLAY (F1 onboard view) ───
-      const cockpitY = viewHeight * 0.55; // where the cockpit starts
-      const noseW = W * 0.18;             // nose cone width
-      const noseH = H - cockpitY;         // nose extends to bottom
+      // ─── COCKPIT OVERLAY (subtle T-cam onboard view) ───
+      // In the reference images, the cockpit is in the lower ~30% of screen
+      // Wheels peek in at the very edges, nose is a slim wedge at center-bottom
 
-      // ── Nose cone (center body) ──
-      const noseGrad = ctx.createLinearGradient(W / 2 - noseW / 2, 0, W / 2 + noseW / 2, 0);
+      // ── Front wheels (small, at screen edges, partially off-screen) ──
+      const wheelW = W * 0.045;
+      const wheelH = H * 0.10;
+      const wheelY = H * 0.72;
+      // Left wheel (partially off left edge)
+      ctx.fillStyle = "#111";
+      ctx.beginPath();
+      ctx.ellipse(W * 0.07, wheelY, wheelW, wheelH, -0.1, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#1a1a1a";
+      ctx.beginPath();
+      ctx.ellipse(W * 0.07, wheelY, wheelW * 0.8, wheelH * 0.8, -0.1, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#252525";
+      ctx.lineWidth = 1;
+      for (let wg = 1; wg < 4; wg++) {
+        ctx.beginPath();
+        ctx.ellipse(W * 0.07, wheelY, wheelW * (0.25 + wg * 0.18), wheelH * (0.25 + wg * 0.18), -0.1, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      // Right wheel (partially off right edge)
+      ctx.fillStyle = "#111";
+      ctx.beginPath();
+      ctx.ellipse(W * 0.93, wheelY, wheelW, wheelH, 0.1, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#1a1a1a";
+      ctx.beginPath();
+      ctx.ellipse(W * 0.93, wheelY, wheelW * 0.8, wheelH * 0.8, 0.1, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#252525";
+      for (let wg = 1; wg < 4; wg++) {
+        ctx.beginPath();
+        ctx.ellipse(W * 0.93, wheelY, wheelW * (0.25 + wg * 0.18), wheelH * (0.25 + wg * 0.18), 0.1, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // ── Nose cone (slim center wedge, bottom 25% of screen) ──
+      const noseTop = H * 0.72;
+      const noseGrad = ctx.createLinearGradient(W / 2 - W * 0.06, 0, W / 2 + W * 0.06, 0);
       noseGrad.addColorStop(0, "#1a1a2a");
       noseGrad.addColorStop(0.3, "#2a2a3a");
-      noseGrad.addColorStop(0.5, "#333344");
+      noseGrad.addColorStop(0.5, "#353545");
       noseGrad.addColorStop(0.7, "#2a2a3a");
       noseGrad.addColorStop(1, "#1a1a2a");
       ctx.fillStyle = noseGrad;
-      // Tapered nose shape
       ctx.beginPath();
-      ctx.moveTo(W / 2 - noseW * 0.15, cockpitY);       // narrow top
-      ctx.lineTo(W / 2 + noseW * 0.15, cockpitY);
-      ctx.lineTo(W / 2 + noseW * 0.55, H * 0.78);       // widens
-      ctx.lineTo(W / 2 + noseW * 0.7, H);                // wide at bottom
-      ctx.lineTo(W / 2 - noseW * 0.7, H);
-      ctx.lineTo(W / 2 - noseW * 0.55, H * 0.78);
+      ctx.moveTo(W / 2 - W * 0.015, noseTop);          // narrow tip
+      ctx.lineTo(W / 2 + W * 0.015, noseTop);
+      ctx.lineTo(W / 2 + W * 0.06, H * 0.88);          // widens toward camera
+      ctx.lineTo(W / 2 + W * 0.08, H);
+      ctx.lineTo(W / 2 - W * 0.08, H);
+      ctx.lineTo(W / 2 - W * 0.06, H * 0.88);
       ctx.fill();
-
-      // Nose center line
-      ctx.strokeStyle = "rgba(255,255,255,0.08)";
+      // Center line
+      ctx.strokeStyle = "rgba(255,255,255,0.06)";
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(W / 2, cockpitY + 10);
+      ctx.moveTo(W / 2, noseTop + 5);
       ctx.lineTo(W / 2, H);
       ctx.stroke();
 
-      // ── Front wheels (visible at sides) ──
-      const wheelW = W * 0.08;
-      const wheelH = H * 0.18;
-      const wheelY = H * 0.58;
-      // Left wheel
-      ctx.fillStyle = "#111";
+      // ── Suspension arms (thin lines from nose to wheels) ──
+      ctx.strokeStyle = "#2a2a38";
+      ctx.lineWidth = Math.max(1.5, W * 0.002);
+      // Left
       ctx.beginPath();
-      ctx.ellipse(W * 0.18, wheelY, wheelW, wheelH, -0.15, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = "#1a1a1a";
-      ctx.beginPath();
-      ctx.ellipse(W * 0.18, wheelY, wheelW * 0.85, wheelH * 0.85, -0.15, 0, Math.PI * 2);
-      ctx.fill();
-      // Wheel grooves
-      ctx.strokeStyle = "#222";
-      ctx.lineWidth = 1;
-      for (let wg = 0; wg < 4; wg++) {
-        ctx.beginPath();
-        ctx.ellipse(W * 0.18, wheelY, wheelW * (0.3 + wg * 0.15), wheelH * (0.3 + wg * 0.15), -0.15, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-      // Right wheel
-      ctx.fillStyle = "#111";
-      ctx.beginPath();
-      ctx.ellipse(W * 0.82, wheelY, wheelW, wheelH, 0.15, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = "#1a1a1a";
-      ctx.beginPath();
-      ctx.ellipse(W * 0.82, wheelY, wheelW * 0.85, wheelH * 0.85, 0.15, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = "#222";
-      for (let wg = 0; wg < 4; wg++) {
-        ctx.beginPath();
-        ctx.ellipse(W * 0.82, wheelY, wheelW * (0.3 + wg * 0.15), wheelH * (0.3 + wg * 0.15), 0.15, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-
-      // ── Suspension arms (connecting wheels to nose) ──
-      ctx.strokeStyle = "#2a2a35";
-      ctx.lineWidth = Math.max(2, W * 0.003);
-      // Left upper
-      ctx.beginPath();
-      ctx.moveTo(W / 2 - noseW * 0.2, cockpitY + noseH * 0.25);
-      ctx.lineTo(W * 0.22, wheelY - wheelH * 0.3);
+      ctx.moveTo(W / 2 - W * 0.03, H * 0.76);
+      ctx.lineTo(W * 0.10, wheelY - wheelH * 0.2);
       ctx.stroke();
-      // Left lower
       ctx.beginPath();
-      ctx.moveTo(W / 2 - noseW * 0.25, cockpitY + noseH * 0.4);
-      ctx.lineTo(W * 0.22, wheelY + wheelH * 0.1);
+      ctx.moveTo(W / 2 - W * 0.035, H * 0.82);
+      ctx.lineTo(W * 0.10, wheelY + wheelH * 0.15);
       ctx.stroke();
-      // Right upper
+      // Right
       ctx.beginPath();
-      ctx.moveTo(W / 2 + noseW * 0.2, cockpitY + noseH * 0.25);
-      ctx.lineTo(W * 0.78, wheelY - wheelH * 0.3);
+      ctx.moveTo(W / 2 + W * 0.03, H * 0.76);
+      ctx.lineTo(W * 0.90, wheelY - wheelH * 0.2);
       ctx.stroke();
-      // Right lower
       ctx.beginPath();
-      ctx.moveTo(W / 2 + noseW * 0.25, cockpitY + noseH * 0.4);
-      ctx.lineTo(W * 0.78, wheelY + wheelH * 0.1);
+      ctx.moveTo(W / 2 + W * 0.035, H * 0.82);
+      ctx.lineTo(W * 0.90, wheelY + wheelH * 0.15);
       ctx.stroke();
 
-      // ── Halo (titanium arch over driver) ──
-      ctx.strokeStyle = "#555";
-      ctx.lineWidth = Math.max(4, W * 0.006);
-      ctx.beginPath();
-      ctx.moveTo(W * 0.38, H * 0.88);
-      ctx.quadraticCurveTo(W * 0.42, cockpitY - 15, W / 2, cockpitY - 20);
-      ctx.quadraticCurveTo(W * 0.58, cockpitY - 15, W * 0.62, H * 0.88);
-      ctx.stroke();
-      // Halo center pillar
-      ctx.lineWidth = Math.max(3, W * 0.004);
-      ctx.beginPath();
-      ctx.moveTo(W / 2, cockpitY - 20);
-      ctx.lineTo(W / 2, cockpitY + 5);
-      ctx.stroke();
-
-      // ── Side mirrors ──
-      const mirrorW = W * 0.04;
-      const mirrorH = H * 0.025;
-      const mirrorY = cockpitY + 30;
-      // Left mirror housing
+      // ── Side mirrors (small, at roughly 15%/85% width) ──
+      const mirrorW = W * 0.025;
+      const mirrorH = H * 0.018;
+      const mirrorY = H * 0.66;
       ctx.fillStyle = "#1a1a2a";
-      ctx.fillRect(W * 0.28 - mirrorW, mirrorY, mirrorW, mirrorH);
+      ctx.fillRect(W * 0.13 - mirrorW, mirrorY, mirrorW, mirrorH);
       ctx.fillStyle = "#304060";
-      ctx.fillRect(W * 0.28 - mirrorW + 2, mirrorY + 2, mirrorW - 4, mirrorH - 4);
-      // Right mirror housing
+      ctx.fillRect(W * 0.13 - mirrorW + 1, mirrorY + 1, mirrorW - 2, mirrorH - 2);
       ctx.fillStyle = "#1a1a2a";
-      ctx.fillRect(W * 0.72, mirrorY, mirrorW, mirrorH);
+      ctx.fillRect(W * 0.87, mirrorY, mirrorW, mirrorH);
       ctx.fillStyle = "#304060";
-      ctx.fillRect(W * 0.72 + 2, mirrorY + 2, mirrorW - 4, mirrorH - 4);
-      // Show passed cars in mirrors
+      ctx.fillRect(W * 0.87 + 1, mirrorY + 1, mirrorW - 2, mirrorH - 2);
+      // Mirror reflections
       g.aiCars.forEach(car => {
         if (car.segmentsAhead < 2) {
-          const mx = car.lane < 0 ? W * 0.28 - mirrorW + 4 : W * 0.72 + 4;
+          const mx = car.lane < 0 ? W * 0.13 - mirrorW + 3 : W * 0.87 + 3;
           ctx.fillStyle = car.color;
-          ctx.fillRect(mx, mirrorY + 4, 5, 3);
+          ctx.fillRect(mx, mirrorY + 3, 4, 2);
         }
       });
 
-      // ── Dashboard/steering wheel area (bottom strip) ──
-      const dashY = H * 0.88;
-      const dashGrad = ctx.createLinearGradient(0, dashY, 0, H);
-      dashGrad.addColorStop(0, "rgba(20,20,30,0.8)");
-      dashGrad.addColorStop(1, "#0a0a10");
-      ctx.fillStyle = dashGrad;
-      ctx.fillRect(W * 0.3, dashY, W * 0.4, H - dashY);
+      // ── Halo center pillar only (thin vertical bar, no arch blocking view) ──
+      ctx.fillStyle = "rgba(60,60,70,0.7)";
+      ctx.fillRect(W / 2 - 2, noseTop - H * 0.08, 4, H * 0.08);
 
-      // Steering wheel (rounded rectangle)
-      ctx.fillStyle = "#111118";
-      ctx.beginPath();
-      ctx.ellipse(W / 2, H + H * 0.02, W * 0.12, H * 0.08, 0, Math.PI * 1.1, Math.PI * 1.9);
-      ctx.fill();
-      ctx.fillStyle = "#18181f";
-      ctx.beginPath();
-      ctx.ellipse(W / 2, H + H * 0.02, W * 0.09, H * 0.06, 0, Math.PI * 1.15, Math.PI * 1.85);
-      ctx.fill();
+      // ── Dashboard bar (slim bottom strip with telemetry) ──
+      const dashY = H * 0.91;
+      ctx.fillStyle = "rgba(10,10,15,0.85)";
+      ctx.fillRect(W * 0.32, dashY, W * 0.36, H - dashY);
 
-      // RPM LED strip (on steering wheel)
+      // RPM LED strip
       const rpmFraction = Math.min(1, g.speed / 2.5);
       const ledCount = 15;
-      const ledW = Math.min(8, W * 0.008);
-      const ledGap = ledW * 1.6;
+      const ledW = Math.min(6, W * 0.006);
+      const ledGap = ledW * 1.5;
       const ledStartX = W / 2 - (ledCount * ledGap) / 2;
       for (let l = 0; l < ledCount; l++) {
         const isLit = l / ledCount < rpmFraction;
         if (l < 5) ctx.fillStyle = isLit ? "#0d0" : "#091a09";
         else if (l < 10) ctx.fillStyle = isLit ? "#dd0" : "#1a1a09";
         else ctx.fillStyle = isLit ? "#d00" : "#1a0909";
-        ctx.fillRect(ledStartX + l * ledGap, dashY + 4, ledW, ledW * 0.5);
+        ctx.fillRect(ledStartX + l * ledGap, dashY + 3, ledW, ledW * 0.5);
       }
 
-      // Speed readout
-      const kph = Math.floor(g.speed * 180 + 80);
-      ctx.font = `bold ${Math.max(14, Math.floor(H * 0.026))}px monospace`;
-      ctx.fillStyle = g.boostTimer > 0 ? "#0f8" : "#fff";
-      ctx.textAlign = "center";
-      ctx.fillText(kph.toString(), W * 0.6, dashY + 18);
-      ctx.font = `${Math.max(6, Math.floor(H * 0.008))}px monospace`;
-      ctx.fillStyle = "rgba(255,255,255,0.25)";
-      ctx.fillText("KPH", W * 0.6, dashY + 26);
-
-      // Gear readout (big, center)
+      // Gear (center, big)
       const gear = g.speed < 0.3 ? 2 : g.speed < 0.6 ? 4 : g.speed < 1.0 ? 6 : g.speed < 1.6 ? 7 : 8;
-      ctx.font = `bold ${Math.max(18, Math.floor(H * 0.035))}px monospace`;
+      ctx.font = `bold ${Math.max(16, Math.floor(H * 0.032))}px monospace`;
       ctx.fillStyle = "#fff";
       ctx.textAlign = "center";
-      ctx.fillText(gear.toString(), W * 0.4, dashY + 20);
-      ctx.font = `${Math.max(6, Math.floor(H * 0.008))}px monospace`;
-      ctx.fillStyle = "rgba(255,255,255,0.25)";
-      ctx.fillText("GEAR", W * 0.4, dashY + 28);
+      ctx.fillText(gear.toString(), W / 2, dashY + 22);
+
+      // Speed (right of center)
+      const kph = Math.floor(g.speed * 180 + 80);
+      ctx.font = `bold ${Math.max(11, Math.floor(H * 0.018))}px monospace`;
+      ctx.fillStyle = g.boostTimer > 0 ? "#0f8" : "#ccc";
+      ctx.fillText(kph.toString(), W * 0.58, dashY + 16);
+      ctx.font = `${Math.max(5, Math.floor(H * 0.007))}px monospace`;
+      ctx.fillStyle = "rgba(255,255,255,0.2)";
+      ctx.fillText("KPH", W * 0.58, dashY + 23);
 
       // DRS indicator
       if (g.boostTimer > 0 && g.boostTimer % 14 < 8) {
-        ctx.font = `bold ${Math.max(10, Math.floor(H * 0.014))}px monospace`;
+        ctx.font = `bold ${Math.max(9, Math.floor(H * 0.012))}px monospace`;
         ctx.fillStyle = "#0f8";
         ctx.textAlign = "center";
-        ctx.fillText("DRS", W / 2, dashY + 18);
+        ctx.fillText("DRS", W * 0.42, dashY + 16);
       }
 
       if (g.shakeTimer > 0) ctx.restore();
