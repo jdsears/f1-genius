@@ -57,7 +57,8 @@ class SoundEngine {
     this.noiseSource = null;
     this.modOsc = null;
     this.filterBank = [];
-    this.harmonicMults = [2, 4, 8, 16, 32];
+    this.harmonicMults = [1, 2, 4, 8, 16];
+    this.lowOsc = null;  // sub-bass oscillator for body
   }
 
   init() {
@@ -66,13 +67,13 @@ class SoundEngine {
       this.ctx = new (window.AudioContext || window.webkitAudioContext)();
       const ac = this.ctx;
 
-      // Master gain → compressor → destination
+      // Master gain → light compressor → destination
       this.masterGain = ac.createGain();
       this.masterGain.gain.value = 0;
       const comp = ac.createDynamicsCompressor();
-      comp.threshold.value = -18;
-      comp.ratio.value = 6;
-      comp.knee.value = 10;
+      comp.threshold.value = -8;
+      comp.ratio.value = 4;
+      comp.knee.value = 8;
       this.masterGain.connect(comp);
       comp.connect(ac.destination);
 
@@ -86,18 +87,18 @@ class SoundEngine {
       this.noiseSource.loop = true;
 
       // ── Bandpass filter bank at engine harmonics ──
-      // V8 cross-plane: dominant at 2x, 4x, 8x crankshaft freq
+      // V8 cross-plane: dominant at 1x (crank), 2x, 4x, 8x crankshaft freq
       const idleCrank = 50; // ~3000 RPM idle
       const harmonics = [
-        { mult: 2,  Q: 4,  gain: 1.0 },   // deep rumble
-        { mult: 4,  Q: 6,  gain: 0.9 },   // firing frequency (dominant)
-        { mult: 8,  Q: 8,  gain: 0.45 },  // upper harmonic
-        { mult: 16, Q: 10, gain: 0.2 },   // buzz
-        { mult: 32, Q: 14, gain: 0.08 },  // air/presence
+        { mult: 1,  Q: 3,  gain: 0.8 },   // sub-bass throb
+        { mult: 2,  Q: 4,  gain: 1.0 },   // deep rumble (dominant)
+        { mult: 4,  Q: 5,  gain: 0.9 },   // firing frequency
+        { mult: 8,  Q: 7,  gain: 0.5 },   // upper harmonic
+        { mult: 16, Q: 10, gain: 0.15 },  // presence
       ];
 
       const merger = ac.createGain();
-      merger.gain.value = 1.0;
+      merger.gain.value = 1.2;
 
       harmonics.forEach(h => {
         const bp = ac.createBiquadFilter();
@@ -112,42 +113,49 @@ class SoundEngine {
         this.filterBank.push({ filter: bp, gain: g, mult: h.mult });
       });
 
+      // ── Exhaust distortion (waveshaper for grit and body) ──
+      const waveshaper = ac.createWaveShaper();
+      const curve = new Float32Array(512);
+      for (let i = 0; i < 512; i++) {
+        const x = (i / 256) - 1;
+        curve[i] = Math.tanh(x * 2.5); // aggressive saturation
+      }
+      waveshaper.curve = curve;
+      waveshaper.oversample = "2x";
+
       // ── Output gain (modulated by firing oscillator) ──
       const outputGain = ac.createGain();
-      outputGain.gain.value = 0.5;
-      merger.connect(outputGain);
+      outputGain.gain.value = 0.6;
+      merger.connect(waveshaper);
+      waveshaper.connect(outputGain);
       outputGain.connect(this.masterGain);
 
+      // ── Sub-bass oscillator (adds the chest-thumping low end) ──
+      this.lowOsc = ac.createOscillator();
+      this.lowOsc.type = "sine";
+      this.lowOsc.frequency.value = idleCrank; // crank frequency
+      const lowGain = ac.createGain();
+      lowGain.gain.value = 0.35;
+      this.lowOsc.connect(lowGain);
+      lowGain.connect(this.masterGain);
+      this.lowGainNode = lowGain;
+
       // ── Periodic wave modulator — V8 cross-plane firing pattern ──
-      // Cross-plane V8 fires unevenly: gives the distinctive burble
-      const real = new Float32Array([0, 0.4, 1.0, 0.3, 0.15, 0.05]);
+      const real = new Float32Array([0, 0.5, 1.0, 0.4, 0.2, 0.08]);
       const imag = new Float32Array([0, 0, 0, 0, 0, 0]);
       const wave = ac.createPeriodicWave(real, imag);
       this.modOsc = ac.createOscillator();
       this.modOsc.setPeriodicWave(wave);
       this.modOsc.frequency.value = idleCrank * 4; // firing freq
       const modDepth = ac.createGain();
-      modDepth.gain.value = 0.6; // modulation depth
+      modDepth.gain.value = 0.5; // modulation depth
       this.modOsc.connect(modDepth);
       modDepth.connect(outputGain.gain);
       this.modDepthNode = modDepth;
 
-      // ── Exhaust distortion (subtle waveshaper for crackle) ──
-      const waveshaper = ac.createWaveShaper();
-      const curve = new Float32Array(256);
-      for (let i = 0; i < 256; i++) {
-        const x = (i / 128) - 1;
-        curve[i] = Math.tanh(x * 1.5);
-      }
-      waveshaper.curve = curve;
-      waveshaper.oversample = "2x";
-      // Insert between merger and outputGain
-      merger.disconnect(outputGain);
-      merger.connect(waveshaper);
-      waveshaper.connect(outputGain);
-
       this.noiseSource.start();
       this.modOsc.start();
+      this.lowOsc.start();
       this.started = true;
     } catch (_) { /* audio not available */ }
   }
@@ -155,31 +163,37 @@ class SoundEngine {
   updateEngine(speed) {
     if (!this.started) return;
     const t = this.ctx.currentTime;
-    // Map game speed to RPM: idle ~2500, max ~9000
-    const rpm = 2500 + speed * 4000;
+    // Map game speed to RPM: idle ~2800, max ~11000
+    const rpm = 2800 + speed * 5000;
     const crankFreq = rpm / 60;
     const firingFreq = crankFreq * 4;
 
     // Update modulator frequency
-    this.modOsc.frequency.setTargetAtTime(firingFreq, t, 0.04);
+    this.modOsc.frequency.setTargetAtTime(firingFreq, t, 0.03);
 
     // Update all bandpass filters
     this.filterBank.forEach(({ filter, mult }) => {
-      filter.frequency.setTargetAtTime(crankFreq * mult, t, 0.04);
+      filter.frequency.setTargetAtTime(crankFreq * mult, t, 0.03);
     });
 
-    // Volume: quiet at idle, louder with speed
-    const vol = Math.min(0.18, 0.03 + speed * 0.08);
-    this.masterGain.gain.setTargetAtTime(vol, t, 0.03);
+    // Update sub-bass oscillator
+    this.lowOsc.frequency.setTargetAtTime(crankFreq, t, 0.03);
+    // Sub-bass louder at low RPM, quieter at high RPM
+    const lowVol = Math.max(0.1, 0.4 - speed * 0.1);
+    this.lowGainNode.gain.setTargetAtTime(lowVol, t, 0.05);
+
+    // Volume: louder overall, scales with speed
+    const vol = Math.min(0.55, 0.12 + speed * 0.2);
+    this.masterGain.gain.setTargetAtTime(vol, t, 0.02);
 
     // Reduce modulation depth at high RPM (engine smooths out)
-    const modDepth = 0.7 - speed * 0.15;
-    this.modDepthNode.gain.setTargetAtTime(Math.max(0.2, modDepth), t, 0.05);
+    const modDepth = 0.6 - speed * 0.12;
+    this.modDepthNode.gain.setTargetAtTime(Math.max(0.15, modDepth), t, 0.05);
   }
 
   stopEngine() {
     if (!this.started) return;
-    this.masterGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.4);
+    this.masterGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.3);
   }
 
   playTone(freq, duration, type = "square", vol = 0.1) {
@@ -219,6 +233,7 @@ class SoundEngine {
     if (this.started && this.ctx) {
       try { this.noiseSource.stop(); } catch (_) {}
       try { this.modOsc.stop(); } catch (_) {}
+      try { this.lowOsc.stop(); } catch (_) {}
       this.ctx.close();
       this.started = false;
     }
@@ -479,11 +494,11 @@ export default function App() {
         const curSegIdx = Math.floor(g.position) % g.segments.length;
         const curSeg = g.segments[curSegIdx];
         const curveIntensity = Math.abs(curSeg ? curSeg.curve : 0);
-        if (curveIntensity > 20 && g.boostTimer <= 0) {
-          // Target speed: full speed on straights, down to 0.5 on tight corners (curve 120)
-          const cornerSpeed = Math.max(0.5, TUNING.BASE_SPEED * (1 - curveIntensity * 0.005));
+        if (curveIntensity > 10 && g.boostTimer <= 0) {
+          // Target speed: full on straights, down to ~0.6 on tightest corners (curve 50)
+          const cornerSpeed = Math.max(0.6, TUNING.BASE_SPEED * (1 - curveIntensity * 0.012));
           if (g.speed > cornerSpeed) {
-            g.speed += (cornerSpeed - g.speed) * 0.08; // smooth braking
+            g.speed += (cornerSpeed - g.speed) * 0.06; // smooth braking
           }
         }
 
@@ -932,164 +947,168 @@ export default function App() {
         );
       }
 
-      // ─── COCKPIT OVERLAY (subtle T-cam onboard view) ───
-      // In the reference images, the cockpit is in the lower ~30% of screen
-      // Wheels peek in at the very edges, nose is a slim wedge at center-bottom
+      // ─── COCKPIT OVERLAY (realistic F1 T-cam onboard) ───
+      // Real T-cam: you see the halo, nose tip fading into distance,
+      // wheel tops barely visible at edges, and a compact steering wheel display
 
-      // ── Front wheels (small, at screen edges, partially off-screen) ──
-      const wheelW = W * 0.045;
-      const wheelH = H * 0.10;
-      const wheelY = H * 0.72;
-      // Left wheel (partially off left edge)
-      ctx.fillStyle = "#111";
-      ctx.beginPath();
-      ctx.ellipse(W * 0.07, wheelY, wheelW, wheelH, -0.1, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = "#1a1a1a";
-      ctx.beginPath();
-      ctx.ellipse(W * 0.07, wheelY, wheelW * 0.8, wheelH * 0.8, -0.1, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = "#252525";
-      ctx.lineWidth = 1;
-      for (let wg = 1; wg < 4; wg++) {
-        ctx.beginPath();
-        ctx.ellipse(W * 0.07, wheelY, wheelW * (0.25 + wg * 0.18), wheelH * (0.25 + wg * 0.18), -0.1, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-      // Right wheel (partially off right edge)
-      ctx.fillStyle = "#111";
-      ctx.beginPath();
-      ctx.ellipse(W * 0.93, wheelY, wheelW, wheelH, 0.1, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = "#1a1a1a";
-      ctx.beginPath();
-      ctx.ellipse(W * 0.93, wheelY, wheelW * 0.8, wheelH * 0.8, 0.1, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = "#252525";
-      for (let wg = 1; wg < 4; wg++) {
-        ctx.beginPath();
-        ctx.ellipse(W * 0.93, wheelY, wheelW * (0.25 + wg * 0.18), wheelH * (0.25 + wg * 0.18), 0.1, 0, Math.PI * 2);
-        ctx.stroke();
-      }
+      const noseTop = H * 0.78;
 
-      // ── Nose cone (slim center wedge, bottom 25% of screen) ──
-      const noseTop = H * 0.72;
-      const noseGrad = ctx.createLinearGradient(W / 2 - W * 0.06, 0, W / 2 + W * 0.06, 0);
-      noseGrad.addColorStop(0, "#1a1a2a");
-      noseGrad.addColorStop(0.3, "#2a2a3a");
-      noseGrad.addColorStop(0.5, "#353545");
-      noseGrad.addColorStop(0.7, "#2a2a3a");
-      noseGrad.addColorStop(1, "#1a1a2a");
+      // ── Nose cone — slim, long vanishing point into distance ──
+      const noseGrad = ctx.createLinearGradient(W / 2 - W * 0.04, 0, W / 2 + W * 0.04, 0);
+      noseGrad.addColorStop(0, "#18181f");
+      noseGrad.addColorStop(0.35, "#25252e");
+      noseGrad.addColorStop(0.5, "#2c2c36");
+      noseGrad.addColorStop(0.65, "#25252e");
+      noseGrad.addColorStop(1, "#18181f");
       ctx.fillStyle = noseGrad;
       ctx.beginPath();
-      ctx.moveTo(W / 2 - W * 0.015, noseTop);          // narrow tip
-      ctx.lineTo(W / 2 + W * 0.015, noseTop);
-      ctx.lineTo(W / 2 + W * 0.06, H * 0.88);          // widens toward camera
-      ctx.lineTo(W / 2 + W * 0.08, H);
-      ctx.lineTo(W / 2 - W * 0.08, H);
-      ctx.lineTo(W / 2 - W * 0.06, H * 0.88);
+      ctx.moveTo(W / 2 - W * 0.008, noseTop);       // very narrow tip
+      ctx.lineTo(W / 2 + W * 0.008, noseTop);
+      ctx.lineTo(W / 2 + W * 0.045, H * 0.92);      // widens gradually
+      ctx.lineTo(W / 2 + W * 0.065, H);
+      ctx.lineTo(W / 2 - W * 0.065, H);
+      ctx.lineTo(W / 2 - W * 0.045, H * 0.92);
       ctx.fill();
-      // Center line
-      ctx.strokeStyle = "rgba(255,255,255,0.06)";
+
+      // Nose highlight line
+      ctx.strokeStyle = "rgba(255,255,255,0.04)";
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(W / 2, noseTop + 5);
+      ctx.moveTo(W / 2, noseTop + 3);
       ctx.lineTo(W / 2, H);
       ctx.stroke();
 
-      // ── Suspension arms (thin lines from nose to wheels) ──
-      ctx.strokeStyle = "#2a2a38";
-      ctx.lineWidth = Math.max(1.5, W * 0.002);
-      // Left
+      // ── Front wheel tops (just the tops peeking in at screen edges) ──
+      // Left wheel — only the top arc visible, mostly off-screen
+      ctx.fillStyle = "#0d0d0d";
       ctx.beginPath();
-      ctx.moveTo(W / 2 - W * 0.03, H * 0.76);
-      ctx.lineTo(W * 0.10, wheelY - wheelH * 0.2);
+      ctx.ellipse(W * 0.035, H * 0.82, W * 0.028, H * 0.06, -0.15, -Math.PI * 0.6, Math.PI * 0.2);
+      ctx.fill();
+      // Tyre texture
+      ctx.fillStyle = "#151515";
+      ctx.beginPath();
+      ctx.ellipse(W * 0.035, H * 0.82, W * 0.022, H * 0.048, -0.15, -Math.PI * 0.6, Math.PI * 0.2);
+      ctx.fill();
+
+      // Right wheel — mirror of left
+      ctx.fillStyle = "#0d0d0d";
+      ctx.beginPath();
+      ctx.ellipse(W * 0.965, H * 0.82, W * 0.028, H * 0.06, 0.15, Math.PI * 0.8, Math.PI * 1.6);
+      ctx.fill();
+      ctx.fillStyle = "#151515";
+      ctx.beginPath();
+      ctx.ellipse(W * 0.965, H * 0.82, W * 0.022, H * 0.048, 0.15, Math.PI * 0.8, Math.PI * 1.6);
+      ctx.fill();
+
+      // ── Suspension wishbones (very thin, subtle) ──
+      ctx.strokeStyle = "rgba(30,30,40,0.6)";
+      ctx.lineWidth = Math.max(1, W * 0.0015);
+      // Left upper/lower
+      ctx.beginPath();
+      ctx.moveTo(W / 2 - W * 0.02, H * 0.80);
+      ctx.lineTo(W * 0.06, H * 0.79);
       ctx.stroke();
       ctx.beginPath();
-      ctx.moveTo(W / 2 - W * 0.035, H * 0.82);
-      ctx.lineTo(W * 0.10, wheelY + wheelH * 0.15);
+      ctx.moveTo(W / 2 - W * 0.025, H * 0.85);
+      ctx.lineTo(W * 0.06, H * 0.84);
       ctx.stroke();
-      // Right
+      // Right upper/lower
       ctx.beginPath();
-      ctx.moveTo(W / 2 + W * 0.03, H * 0.76);
-      ctx.lineTo(W * 0.90, wheelY - wheelH * 0.2);
+      ctx.moveTo(W / 2 + W * 0.02, H * 0.80);
+      ctx.lineTo(W * 0.94, H * 0.79);
       ctx.stroke();
       ctx.beginPath();
-      ctx.moveTo(W / 2 + W * 0.035, H * 0.82);
-      ctx.lineTo(W * 0.90, wheelY + wheelH * 0.15);
+      ctx.moveTo(W / 2 + W * 0.025, H * 0.85);
+      ctx.lineTo(W * 0.94, H * 0.84);
       ctx.stroke();
 
-      // ── Side mirrors (small, at roughly 15%/85% width) ──
-      const mirrorW = W * 0.025;
-      const mirrorH = H * 0.018;
-      const mirrorY = H * 0.66;
-      ctx.fillStyle = "#1a1a2a";
-      ctx.fillRect(W * 0.13 - mirrorW, mirrorY, mirrorW, mirrorH);
-      ctx.fillStyle = "#304060";
-      ctx.fillRect(W * 0.13 - mirrorW + 1, mirrorY + 1, mirrorW - 2, mirrorH - 2);
-      ctx.fillStyle = "#1a1a2a";
-      ctx.fillRect(W * 0.87, mirrorY, mirrorW, mirrorH);
-      ctx.fillStyle = "#304060";
-      ctx.fillRect(W * 0.87 + 1, mirrorY + 1, mirrorW - 2, mirrorH - 2);
-      // Mirror reflections — show cars behind the player
+      // ── Side mirrors (small pods) ──
+      const mirrorW = W * 0.022;
+      const mirrorH = H * 0.016;
+      const mirrorY = H * 0.72;
+      // Left mirror housing
+      ctx.fillStyle = "#18181f";
+      ctx.fillRect(W * 0.10, mirrorY, mirrorW, mirrorH);
+      ctx.fillStyle = "#283848";
+      ctx.fillRect(W * 0.10 + 1, mirrorY + 1, mirrorW - 2, mirrorH - 2);
+      // Right mirror housing
+      ctx.fillStyle = "#18181f";
+      ctx.fillRect(W * 0.90 - mirrorW, mirrorY, mirrorW, mirrorH);
+      ctx.fillStyle = "#283848";
+      ctx.fillRect(W * 0.90 - mirrorW + 1, mirrorY + 1, mirrorW - 2, mirrorH - 2);
+      // Mirror reflections
       g.aiCars.forEach(car => {
         if (car.segmentsAhead < 3) {
-          // Car behind or very close — show in mirrors
-          // Left mirror if car is on the left, right mirror if on the right
-          const inLeftMirror = car.lane <= 0;
-          const mx = inLeftMirror ? W * 0.13 - mirrorW + 2 : W * 0.87 + 2;
-          // Size based on closeness — closer car = bigger reflection
+          const inLeft = car.lane <= 0;
+          const mx = inLeft ? W * 0.10 + 2 : W * 0.90 - mirrorW + 2;
           const closeness = Math.max(1, 4 - Math.abs(car.segmentsAhead));
           ctx.fillStyle = car.color;
           ctx.fillRect(mx, mirrorY + 2, Math.min(mirrorW - 4, closeness * 3), Math.min(mirrorH - 4, closeness * 2));
         }
       });
 
-      // ── Halo center pillar only (thin vertical bar, no arch blocking view) ──
-      ctx.fillStyle = "rgba(60,60,70,0.7)";
-      ctx.fillRect(W / 2 - 2, noseTop - H * 0.08, 4, H * 0.08);
+      // ── Halo — the titanium bar across the top of the cockpit ──
+      // Central pillar (thin vertical)
+      ctx.fillStyle = "rgba(55,55,65,0.55)";
+      ctx.fillRect(W / 2 - 2, noseTop - H * 0.12, 4, H * 0.12);
 
-      // ── Dashboard bar (slim bottom strip with telemetry) ──
-      const dashY = H * 0.91;
-      ctx.fillStyle = "rgba(10,10,15,0.85)";
-      ctx.fillRect(W * 0.32, dashY, W * 0.36, H - dashY);
+      // ── Steering wheel display (compact, bottom center) ──
+      const dashY = H * 0.92;
+      const dashW = W * 0.28;
+      const dashH = H - dashY;
 
-      // RPM LED strip
-      const rpmFraction = Math.min(1, g.speed / 2.5);
+      // Display background (dark carbon look)
+      const dashGrad = ctx.createLinearGradient(W / 2 - dashW / 2, dashY, W / 2 + dashW / 2, dashY);
+      dashGrad.addColorStop(0, "rgba(8,8,12,0.9)");
+      dashGrad.addColorStop(0.5, "rgba(15,15,20,0.92)");
+      dashGrad.addColorStop(1, "rgba(8,8,12,0.9)");
+      ctx.fillStyle = dashGrad;
+      ctx.beginPath();
+      ctx.moveTo(W / 2 - dashW / 2, dashY + 4);
+      ctx.quadraticCurveTo(W / 2 - dashW / 2, dashY, W / 2 - dashW / 2 + 8, dashY);
+      ctx.lineTo(W / 2 + dashW / 2 - 8, dashY);
+      ctx.quadraticCurveTo(W / 2 + dashW / 2, dashY, W / 2 + dashW / 2, dashY + 4);
+      ctx.lineTo(W / 2 + dashW / 2, H);
+      ctx.lineTo(W / 2 - dashW / 2, H);
+      ctx.fill();
+
+      // RPM LED strip (across top of steering display)
+      const rpmFraction = Math.min(1, g.speed / TUNING.BOOST_SPEED);
       const ledCount = 15;
-      const ledW = Math.min(6, W * 0.006);
-      const ledGap = ledW * 1.5;
+      const ledSize = Math.min(6, dashW / (ledCount * 1.8));
+      const ledGap = ledSize * 1.6;
       const ledStartX = W / 2 - (ledCount * ledGap) / 2;
       for (let l = 0; l < ledCount; l++) {
         const isLit = l / ledCount < rpmFraction;
-        if (l < 5) ctx.fillStyle = isLit ? "#0d0" : "#091a09";
-        else if (l < 10) ctx.fillStyle = isLit ? "#dd0" : "#1a1a09";
-        else ctx.fillStyle = isLit ? "#d00" : "#1a0909";
-        ctx.fillRect(ledStartX + l * ledGap, dashY + 3, ledW, ledW * 0.5);
+        if (l < 5) ctx.fillStyle = isLit ? "#00dd00" : "#091a09";
+        else if (l < 10) ctx.fillStyle = isLit ? "#dddd00" : "#1a1a09";
+        else ctx.fillStyle = isLit ? "#dd0000" : "#1a0909";
+        ctx.fillRect(ledStartX + l * ledGap, dashY + 3, ledSize, ledSize * 0.55);
       }
 
-      // Gear (center, big)
+      // Gear number (large, center)
       const gear = g.speed < 0.3 ? 2 : g.speed < 0.6 ? 4 : g.speed < 1.0 ? 6 : g.speed < 1.6 ? 7 : 8;
-      ctx.font = `bold ${Math.max(16, Math.floor(H * 0.032))}px monospace`;
+      ctx.font = `bold ${Math.max(18, Math.floor(dashH * 0.55))}px monospace`;
       ctx.fillStyle = "#fff";
       ctx.textAlign = "center";
-      ctx.fillText(gear.toString(), W / 2, dashY + 22);
+      ctx.fillText(gear.toString(), W / 2, dashY + dashH * 0.72);
 
-      // Speed (right of center)
-      const kph = Math.floor(g.speed * 180 + 80);
-      ctx.font = `bold ${Math.max(11, Math.floor(H * 0.018))}px monospace`;
-      ctx.fillStyle = g.boostTimer > 0 ? "#0f8" : "#ccc";
-      ctx.fillText(kph.toString(), W * 0.58, dashY + 16);
-      ctx.font = `${Math.max(5, Math.floor(H * 0.007))}px monospace`;
-      ctx.fillStyle = "rgba(255,255,255,0.2)";
-      ctx.fillText("KPH", W * 0.58, dashY + 23);
+      // Speed (right side of display)
+      const kph = Math.floor(g.speed * 160 + 90);
+      ctx.font = `bold ${Math.max(10, Math.floor(dashH * 0.28))}px monospace`;
+      ctx.fillStyle = g.boostTimer > 0 ? "#0f8" : "#bbb";
+      ctx.textAlign = "right";
+      ctx.fillText(kph.toString(), W / 2 + dashW / 2 - 8, dashY + dashH * 0.55);
+      ctx.font = `${Math.max(6, Math.floor(dashH * 0.14))}px monospace`;
+      ctx.fillStyle = "rgba(255,255,255,0.25)";
+      ctx.fillText("KPH", W / 2 + dashW / 2 - 8, dashY + dashH * 0.72);
 
-      // DRS indicator
+      // DRS indicator (left side, flashing when active)
       if (g.boostTimer > 0 && g.boostTimer % 14 < 8) {
-        ctx.font = `bold ${Math.max(9, Math.floor(H * 0.012))}px monospace`;
+        ctx.font = `bold ${Math.max(9, Math.floor(dashH * 0.22))}px monospace`;
         ctx.fillStyle = "#0f8";
-        ctx.textAlign = "center";
-        ctx.fillText("DRS", W * 0.42, dashY + 16);
+        ctx.textAlign = "left";
+        ctx.fillText("DRS", W / 2 - dashW / 2 + 8, dashY + dashH * 0.55);
       }
 
       if (g.shakeTimer > 0) ctx.restore();

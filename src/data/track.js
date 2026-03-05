@@ -4,24 +4,57 @@
  * l  = length in segments (how long the corner lasts)
  * cv = curve intensity — higher = sharper. negative = left, positive = right.
  *
- * Short corners + long straights = feels like a real circuit, not a windy road.
+ * KEY INSIGHT: In pseudo-3D, curveDrift grows QUADRATICALLY with segment count
+ * but only linearly with curve value. So 30 segs at curve 30 sweeps 3x more
+ * than 10 segs at curve 80. Corners need 20-40+ segments to look dramatic.
  */
 export const SILVERSTONE_CORNERS = [
-  { name: "PIT STRAIGHT",     length: 60, curve: 0 },    // long straight before Copse
-  { name: "COPSE",            length: 10, curve: 80 },    // fast right-hander
-  { name: "MAGGOTTS",         length: 8,  curve: -120 },  // sharp left
-  { name: "BECKETTS",         length: 8,  curve: 120 },   // sharp right (S-curve!)
-  { name: "CHAPEL",           length: 8,  curve: 40 },    // gentle right exit
-  { name: "HANGAR STRAIGHT",  length: 70, curve: 0 },     // longest straight
-  { name: "STOWE",            length: 10, curve: 90 },    // heavy braking right
-  { name: "VALE",             length: 8,  curve: -60 },   // left kink
-  { name: "CLUB",             length: 10, curve: 100 },   // tight right
-  { name: "HAMILTON STRAIGHT",length: 55, curve: 0 },     // back straight
-  { name: "ABBEY",            length: 10, curve: -70 },   // fast left
-  { name: "FARM",             length: 12, curve: 30 },    // gentle right
-  { name: "BRIDGE",           length: 8,  curve: -45 },   // left kink
-  { name: "LUFFIELD",         length: 10, curve: 100 },   // slow tight right
-  { name: "WOODCOTE",         length: 10, curve: -35 },   // slight left onto straight
+  // Start/finish straight — long, builds anticipation
+  { name: "PIT STRAIGHT",     length: 50, curve: 0 },
+
+  // Copse — fast sweeping right-hander, one of the classic corners
+  { name: "COPSE",            length: 30, curve: 35 },
+
+  // Short straight before the esses
+  { name: "MAGGOTTS APP.",    length: 15, curve: 0 },
+
+  // Maggotts-Becketts-Chapel: the famous S-curves
+  // Quick direction changes — each one shorter but punchier
+  { name: "MAGGOTTS",         length: 22, curve: -45 },
+  { name: "BECKETTS",         length: 22, curve: 50 },
+  { name: "CHAPEL",           length: 18, curve: -20 },
+
+  // Hangar Straight — longest straight, DRS zone, top speed
+  { name: "HANGAR STRAIGHT",  length: 55, curve: 0 },
+
+  // Stowe — heavy braking into a right-hander
+  { name: "STOWE",            length: 28, curve: 40 },
+
+  // Short link to Vale
+  { name: "VALE APPROACH",    length: 10, curve: 0 },
+
+  // Vale-Club chicane — tight complex
+  { name: "VALE",             length: 20, curve: -35 },
+  { name: "CLUB",             length: 25, curve: 45 },
+
+  // Back straight (Hamilton Straight in modern layout)
+  { name: "HAMILTON STRAIGHT",length: 40, curve: 0 },
+
+  // Abbey — fast left-hander
+  { name: "ABBEY",            length: 25, curve: -38 },
+
+  // Farm-Bridge — flowing section
+  { name: "FARM",             length: 18, curve: 20 },
+  { name: "BRIDGE",           length: 18, curve: -25 },
+
+  // Short straight before Luffield
+  { name: "LUFFIELD APP.",    length: 12, curve: 0 },
+
+  // Luffield — slow, tight right-hander (good overtaking spot)
+  { name: "LUFFIELD",         length: 30, curve: 42 },
+
+  // Woodcote — slight left back onto the pit straight
+  { name: "WOODCOTE",         length: 20, curve: -18 },
 ];
 
 /**
@@ -42,19 +75,19 @@ export const AI_CARS = [
  * These control the OutRun-style pseudo-3D perspective.
  */
 export const RENDER = {
-  FOV: 150,              // focal length — slightly zoomed for onboard feel
-  CAMERA_HEIGHT: 1.8,    // low driver-eye camera height
-  ROAD_HALF_WIDTH: 4.2,  // wider road for realism
-  DRAW_DISTANCE: 120,    // draw distance in segments
-  CURVE_FACTOR: 0.0018,  // curve accumulation — higher = sharper visible corners
+  FOV: 160,              // focal length — higher = more zoomed, better distance perception
+  CAMERA_HEIGHT: 2.2,    // driver-eye camera height — slightly raised for better road view
+  ROAD_HALF_WIDTH: 4.0,  // road width in world units
+  DRAW_DISTANCE: 150,    // how far ahead we render (more = see corners approaching)
+  CURVE_FACTOR: 0.0012,  // curve accumulation — tuned for new longer corners
 };
 
 /**
  * Game Tuning Constants
  */
 export const TUNING = {
-  BASE_SPEED: 1.3,        // normal racing speed (segments per frame)
-  BOOST_SPEED: 3.0,       // speed after correct answer
+  BASE_SPEED: 1.4,        // normal racing speed (segments per frame)
+  BOOST_SPEED: 3.2,       // speed after correct answer
   SLOW_SPEED: 0.3,        // speed after wrong answer
   BOOST_DURATION: 140,    // frames of boost effect
   SHAKE_DURATION: 25,     // frames of screen shake
