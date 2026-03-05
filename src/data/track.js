@@ -1,28 +1,27 @@
 /**
  * Silverstone Circuit — Corner Definitions
- * 
+ *
  * l  = length in segments (how long the corner lasts)
- * cv = curve intensity (-45 to +45, negative = left, positive = right)
- * 
- * These values control how dramatically the road curves.
- * The curve is applied with a sine envelope so entry/exit is smooth.
+ * cv = curve intensity — higher = sharper. negative = left, positive = right.
+ *
+ * Short corners + long straights = feels like a real circuit, not a windy road.
  */
 export const SILVERSTONE_CORNERS = [
-  { name: "PIT STRAIGHT",    length: 40, curve: 0 },
-  { name: "COPSE",           length: 25, curve: 42 },
-  { name: "MAGGOTTS",        length: 16, curve: -65 },
-  { name: "BECKETTS",        length: 16, curve: 65 },
-  { name: "CHAPEL",          length: 20, curve: 25 },
-  { name: "HANGAR STRAIGHT", length: 50, curve: 0 },
-  { name: "STOWE",           length: 22, curve: 48 },
-  { name: "VALE",            length: 15, curve: -38 },
-  { name: "CLUB",            length: 22, curve: 55 },
-  { name: "HAMILTON STRAIGHT",length: 45, curve: 0 },
-  { name: "ABBEY",           length: 20, curve: -35 },
-  { name: "FARM",            length: 28, curve: 18 },
-  { name: "BRIDGE",          length: 15, curve: -25 },
-  { name: "LUFFIELD",        length: 22, curve: 55 },
-  { name: "WOODCOTE",        length: 20, curve: -22 },
+  { name: "PIT STRAIGHT",     length: 60, curve: 0 },    // long straight before Copse
+  { name: "COPSE",            length: 10, curve: 80 },    // fast right-hander
+  { name: "MAGGOTTS",         length: 8,  curve: -120 },  // sharp left
+  { name: "BECKETTS",         length: 8,  curve: 120 },   // sharp right (S-curve!)
+  { name: "CHAPEL",           length: 8,  curve: 40 },    // gentle right exit
+  { name: "HANGAR STRAIGHT",  length: 70, curve: 0 },     // longest straight
+  { name: "STOWE",            length: 10, curve: 90 },    // heavy braking right
+  { name: "VALE",             length: 8,  curve: -60 },   // left kink
+  { name: "CLUB",             length: 10, curve: 100 },   // tight right
+  { name: "HAMILTON STRAIGHT",length: 55, curve: 0 },     // back straight
+  { name: "ABBEY",            length: 10, curve: -70 },   // fast left
+  { name: "FARM",             length: 12, curve: 30 },    // gentle right
+  { name: "BRIDGE",           length: 8,  curve: -45 },   // left kink
+  { name: "LUFFIELD",         length: 10, curve: 100 },   // slow tight right
+  { name: "WOODCOTE",         length: 10, curve: -35 },   // slight left onto straight
 ];
 
 /**
@@ -46,8 +45,8 @@ export const RENDER = {
   FOV: 150,              // focal length — slightly zoomed for onboard feel
   CAMERA_HEIGHT: 1.8,    // low driver-eye camera height
   ROAD_HALF_WIDTH: 4.2,  // wider road for realism
-  DRAW_DISTANCE: 140,    // more segments for longer view distance
-  CURVE_FACTOR: 0.0008,  // curve accumulation tuned for wider road
+  DRAW_DISTANCE: 120,    // draw distance in segments
+  CURVE_FACTOR: 0.0018,  // curve accumulation — higher = sharper visible corners
 };
 
 /**

@@ -11,7 +11,7 @@ import {
 /** Build the full track by repeating Silverstone corners with sine-smoothed curves */
 function buildTrackSegments() {
   const segments = [];
-  for (let rep = 0; rep < 8; rep++) {
+  for (let rep = 0; rep < 5; rep++) {
     for (const corner of SILVERSTONE_CORNERS) {
       for (let i = 0; i < corner.length; i++) {
         const progress = i / corner.length;
@@ -44,50 +44,102 @@ function positionText(p) {
 class SoundEngine {
   constructor() {
     this.ctx = null;
-    this.oscs = [];       // V8 harmonic oscillators
-    this.gains = [];      // per-oscillator gains
-    this.masterGain = null;
     this.started = false;
+    this.masterGain = null;
+    this.noiseSource = null;
+    this.modOsc = null;
+    this.filterBank = [];
+    this.harmonicMults = [2, 4, 8, 16, 32];
   }
 
   init() {
     if (this.started) return;
     try {
       this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const ac = this.ctx;
 
-      // Master gain → compressor → output
-      this.masterGain = this.ctx.createGain();
+      // Master gain → compressor → destination
+      this.masterGain = ac.createGain();
       this.masterGain.gain.value = 0;
-      const compressor = this.ctx.createDynamicsCompressor();
-      compressor.threshold.value = -20;
-      compressor.ratio.value = 8;
-      this.masterGain.connect(compressor);
-      compressor.connect(this.ctx.destination);
+      const comp = ac.createDynamicsCompressor();
+      comp.threshold.value = -18;
+      comp.ratio.value = 6;
+      comp.knee.value = 10;
+      this.masterGain.connect(comp);
+      comp.connect(ac.destination);
 
-      // V8 engine: deep, bassy rumble with low-end grunt
-      // Lower fundamental, heavy sub-harmonics, less high-end scream
+      // ── Noise buffer (combustion texture) ──
+      const sr = ac.sampleRate;
+      const buf = ac.createBuffer(1, sr * 2, sr);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+      this.noiseSource = ac.createBufferSource();
+      this.noiseSource.buffer = buf;
+      this.noiseSource.loop = true;
+
+      // ── Bandpass filter bank at engine harmonics ──
+      // V8 cross-plane: dominant at 2x, 4x, 8x crankshaft freq
+      const idleCrank = 50; // ~3000 RPM idle
       const harmonics = [
-        { mult: 0.5, type: "sawtooth", vol: 0.28 },  // deep sub-bass rumble
-        { mult: 1.0, type: "sawtooth", vol: 0.25 },  // fundamental — the core growl
-        { mult: 1.5, type: "triangle", vol: 0.12 },  // gives V8 uneven-firing character
-        { mult: 2.0, type: "sawtooth", vol: 0.10 },  // 2nd harmonic — warmth
-        { mult: 0.25,type: "sine",     vol: 0.18 },  // ultra-low rumble you feel
-        { mult: 3.0, type: "sine",     vol: 0.04 },  // gentle upper harmonic
+        { mult: 2,  Q: 4,  gain: 1.0 },   // deep rumble
+        { mult: 4,  Q: 6,  gain: 0.9 },   // firing frequency (dominant)
+        { mult: 8,  Q: 8,  gain: 0.45 },  // upper harmonic
+        { mult: 16, Q: 10, gain: 0.2 },   // buzz
+        { mult: 32, Q: 14, gain: 0.08 },  // air/presence
       ];
 
+      const merger = ac.createGain();
+      merger.gain.value = 1.0;
+
       harmonics.forEach(h => {
-        const osc = this.ctx.createOscillator();
-        const gain = this.ctx.createGain();
-        osc.type = h.type;
-        osc.frequency.value = 120 * h.mult;
-        gain.gain.value = h.vol;
-        osc.connect(gain);
-        gain.connect(this.masterGain);
-        osc.start();
-        this.oscs.push({ osc, mult: h.mult });
-        this.gains.push(gain);
+        const bp = ac.createBiquadFilter();
+        bp.type = "bandpass";
+        bp.frequency.value = idleCrank * h.mult;
+        bp.Q.value = h.Q;
+        const g = ac.createGain();
+        g.gain.value = h.gain;
+        this.noiseSource.connect(bp);
+        bp.connect(g);
+        g.connect(merger);
+        this.filterBank.push({ filter: bp, gain: g, mult: h.mult });
       });
 
+      // ── Output gain (modulated by firing oscillator) ──
+      const outputGain = ac.createGain();
+      outputGain.gain.value = 0.5;
+      merger.connect(outputGain);
+      outputGain.connect(this.masterGain);
+
+      // ── Periodic wave modulator — V8 cross-plane firing pattern ──
+      // Cross-plane V8 fires unevenly: gives the distinctive burble
+      const real = new Float32Array([0, 0.4, 1.0, 0.3, 0.15, 0.05]);
+      const imag = new Float32Array([0, 0, 0, 0, 0, 0]);
+      const wave = ac.createPeriodicWave(real, imag);
+      this.modOsc = ac.createOscillator();
+      this.modOsc.setPeriodicWave(wave);
+      this.modOsc.frequency.value = idleCrank * 4; // firing freq
+      const modDepth = ac.createGain();
+      modDepth.gain.value = 0.6; // modulation depth
+      this.modOsc.connect(modDepth);
+      modDepth.connect(outputGain.gain);
+      this.modDepthNode = modDepth;
+
+      // ── Exhaust distortion (subtle waveshaper for crackle) ──
+      const waveshaper = ac.createWaveShaper();
+      const curve = new Float32Array(256);
+      for (let i = 0; i < 256; i++) {
+        const x = (i / 128) - 1;
+        curve[i] = Math.tanh(x * 1.5);
+      }
+      waveshaper.curve = curve;
+      waveshaper.oversample = "2x";
+      // Insert between merger and outputGain
+      merger.disconnect(outputGain);
+      merger.connect(waveshaper);
+      waveshaper.connect(outputGain);
+
+      this.noiseSource.start();
+      this.modOsc.start();
       this.started = true;
     } catch (_) { /* audio not available */ }
   }
@@ -95,28 +147,31 @@ class SoundEngine {
   updateEngine(speed) {
     if (!this.started) return;
     const t = this.ctx.currentTime;
-    // Map speed to RPM-like frequency: idle ~70Hz, redline ~320Hz (deep V8 range)
-    const baseFreq = 70 + speed * 170;
-    // Volume ramps up with speed, caps at reasonable level
-    const vol = Math.min(0.12, speed * 0.06);
+    // Map game speed to RPM: idle ~2500, max ~9000
+    const rpm = 2500 + speed * 4000;
+    const crankFreq = rpm / 60;
+    const firingFreq = crankFreq * 4;
 
-    this.masterGain.gain.setTargetAtTime(vol, t, 0.03);
+    // Update modulator frequency
+    this.modOsc.frequency.setTargetAtTime(firingFreq, t, 0.04);
 
-    // Update each harmonic frequency
-    this.oscs.forEach(({ osc, mult }) => {
-      osc.frequency.setTargetAtTime(baseFreq * mult, t, 0.02);
+    // Update all bandpass filters
+    this.filterBank.forEach(({ filter, mult }) => {
+      filter.frequency.setTargetAtTime(crankFreq * mult, t, 0.04);
     });
 
-    // Slight detune on harmonics for richer sound (simulates cylinder variance)
-    if (this.oscs.length > 2) {
-      this.oscs[1].osc.detune.setTargetAtTime(3 + speed * 5, t, 0.05);
-      this.oscs[2].osc.detune.setTargetAtTime(-4 + speed * 3, t, 0.05);
-    }
+    // Volume: quiet at idle, louder with speed
+    const vol = Math.min(0.18, 0.03 + speed * 0.08);
+    this.masterGain.gain.setTargetAtTime(vol, t, 0.03);
+
+    // Reduce modulation depth at high RPM (engine smooths out)
+    const modDepth = 0.7 - speed * 0.15;
+    this.modDepthNode.gain.setTargetAtTime(Math.max(0.2, modDepth), t, 0.05);
   }
 
   stopEngine() {
     if (!this.started) return;
-    this.masterGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.3);
+    this.masterGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.4);
   }
 
   playTone(freq, duration, type = "square", vol = 0.1) {
@@ -154,7 +209,8 @@ class SoundEngine {
 
   destroy() {
     if (this.started && this.ctx) {
-      this.oscs.forEach(({ osc }) => osc.stop());
+      try { this.noiseSource.stop(); } catch (_) {}
+      try { this.modOsc.stop(); } catch (_) {}
       this.ctx.close();
       this.started = false;
     }
@@ -273,14 +329,14 @@ export default function App() {
     });
     game.segments = buildTrackSegments();
 
-    // Initialize AI cars — spaced so all are visible within DRAW_DISTANCE
+    // Initialize AI cars — close together so they're clearly visible
     game.aiCars = AI_CARS.map((car, i) => ({
       ...car,
       rank: i + 1,                              // 1 = fastest AI
-      segmentsAhead: 10 + i * 12,               // initial distance ahead (wider spread)
-      targetSegAhead: 10 + i * 12,
-      lane: ((i % 2) * 2 - 1) * 0.3,           // alternating left/right
-      targetLane: ((i % 2) * 2 - 1) * 0.3,
+      segmentsAhead: 6 + i * 6,                 // close spacing: 6, 12, 18, 24, 30
+      targetSegAhead: 6 + i * 6,
+      lane: ((i % 2) * 2 - 1) * 0.35,          // alternating left/right
+      targetLane: ((i % 2) * 2 - 1) * 0.35,
       bobPhase: Math.random() * Math.PI * 2,
       laneChangeTimer: 40 + Math.random() * 60,
     }));
@@ -450,14 +506,16 @@ export default function App() {
           car.bobPhase += 0.04;
 
           // Target distance based on rank relative to player
+          // Cars ahead: close enough to see clearly (6-30 segs)
+          // Cars behind: negative (shown in mirrors)
           if (car.rank < playerRank) {
-            car.targetSegAhead = 10 + (playerRank - car.rank) * 14; // ahead — wider spread
+            car.targetSegAhead = 6 + (playerRank - car.rank) * 7; // ahead, tightly packed
           } else {
-            car.targetSegAhead = -6 - (car.rank - playerRank) * 8; // behind
+            car.targetSegAhead = -4 - (car.rank - playerRank) * 5; // behind
           }
-          // Clamp to draw distance so cars don't disappear
-          car.targetSegAhead = Math.min(car.targetSegAhead, DRAW_DISTANCE - 5);
-          car.segmentsAhead += (car.targetSegAhead - car.segmentsAhead) * 0.02;
+          // Clamp so ahead cars stay within view
+          car.targetSegAhead = Math.min(car.targetSegAhead, 50);
+          car.segmentsAhead += (car.targetSegAhead - car.segmentsAhead) * 0.04; // faster lerp
 
           // Lane changes
           car.laneChangeTimer--;
@@ -736,15 +794,16 @@ export default function App() {
 
         // ── AI CARS (drawn at their depth in the scene) ──
         g.aiCars.forEach(car => {
-          if (car.segmentsAhead < 3 || car.segmentsAhead >= DRAW_DISTANCE - 2) return;
+          if (car.segmentsAhead < 2 || car.segmentsAhead >= DRAW_DISTANCE - 2) return;
           // Draw this car when the current strip matches its depth
           const carDrawIdx = Math.round(car.segmentsAhead);
           if (far.drawOrder !== carDrawIdx) return;
 
-          const carWidth = far.w * 0.10;  // slightly larger for visibility
-          if (carWidth < 3 || far.y < horizon + 5) return;
-          const carHeight = carWidth * 0.42;
-          const carX = far.x + car.lane * far.w * 0.38;
+          // Car width proportional to road width at this depth, with minimum size
+          const carWidth = Math.max(8, far.w * 0.14);
+          if (far.y < horizon + 3) return;
+          const carHeight = carWidth * 0.45;
+          const carX = far.x + car.lane * far.w * 0.35;
           const carY = far.y;
           const bob = Math.sin(car.bobPhase) * 0.6;
 
