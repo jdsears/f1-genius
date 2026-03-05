@@ -44,8 +44,9 @@ function positionText(p) {
 class SoundEngine {
   constructor() {
     this.ctx = null;
-    this.engineOsc = null;
-    this.engineGain = null;
+    this.oscs = [];       // V10 harmonic oscillators
+    this.gains = [];      // per-oscillator gains
+    this.masterGain = null;
     this.started = false;
   }
 
@@ -53,30 +54,69 @@ class SoundEngine {
     if (this.started) return;
     try {
       this.ctx = new (window.AudioContext || window.webkitAudioContext)();
-      // Engine drone
-      this.engineOsc = this.ctx.createOscillator();
-      this.engineGain = this.ctx.createGain();
-      this.engineOsc.type = "sawtooth";
-      this.engineOsc.frequency.value = 80;
-      this.engineGain.gain.value = 0;
-      this.engineOsc.connect(this.engineGain);
-      this.engineGain.connect(this.ctx.destination);
-      this.engineOsc.start();
+
+      // Master gain → compressor → output
+      this.masterGain = this.ctx.createGain();
+      this.masterGain.gain.value = 0;
+      const compressor = this.ctx.createDynamicsCompressor();
+      compressor.threshold.value = -20;
+      compressor.ratio.value = 8;
+      this.masterGain.connect(compressor);
+      compressor.connect(this.ctx.destination);
+
+      // V10 engine: multiple harmonics with different waveforms
+      // Fundamental + overtones that create the screaming V10 character
+      const harmonics = [
+        { mult: 1.0, type: "sawtooth", vol: 0.30 },  // fundamental
+        { mult: 2.0, type: "sawtooth", vol: 0.20 },  // 2nd harmonic — the scream
+        { mult: 3.0, type: "square",   vol: 0.10 },  // 3rd — adds edge
+        { mult: 4.0, type: "sawtooth", vol: 0.08 },  // 4th — high-end buzz
+        { mult: 0.5, type: "sawtooth", vol: 0.15 },  // sub-harmonic — rumble
+        { mult: 5.0, type: "sine",     vol: 0.05 },  // 5th — shimmer
+      ];
+
+      harmonics.forEach(h => {
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = h.type;
+        osc.frequency.value = 120 * h.mult;
+        gain.gain.value = h.vol;
+        osc.connect(gain);
+        gain.connect(this.masterGain);
+        osc.start();
+        this.oscs.push({ osc, mult: h.mult });
+        this.gains.push(gain);
+      });
+
       this.started = true;
     } catch (_) { /* audio not available */ }
   }
 
   updateEngine(speed) {
     if (!this.started) return;
-    const freq = 60 + speed * 140;
-    const vol = Math.min(0.08, speed * 0.04);
-    this.engineOsc.frequency.setTargetAtTime(freq, this.ctx.currentTime, 0.05);
-    this.engineGain.gain.setTargetAtTime(vol, this.ctx.currentTime, 0.05);
+    const t = this.ctx.currentTime;
+    // Map speed to RPM-like frequency: idle ~120Hz, redline ~650Hz
+    const baseFreq = 120 + speed * 350;
+    // Volume ramps up with speed, caps at reasonable level
+    const vol = Math.min(0.14, speed * 0.07);
+
+    this.masterGain.gain.setTargetAtTime(vol, t, 0.03);
+
+    // Update each harmonic frequency
+    this.oscs.forEach(({ osc, mult }) => {
+      osc.frequency.setTargetAtTime(baseFreq * mult, t, 0.02);
+    });
+
+    // Slight detune on harmonics for richer sound (simulates cylinder variance)
+    if (this.oscs.length > 2) {
+      this.oscs[1].osc.detune.setTargetAtTime(3 + speed * 5, t, 0.05);
+      this.oscs[2].osc.detune.setTargetAtTime(-4 + speed * 3, t, 0.05);
+    }
   }
 
   stopEngine() {
     if (!this.started) return;
-    this.engineGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.1);
+    this.masterGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.3);
   }
 
   playTone(freq, duration, type = "square", vol = 0.1) {
@@ -93,10 +133,19 @@ class SoundEngine {
     osc.stop(this.ctx.currentTime + duration);
   }
 
-  correct() { this.playTone(880, 0.12, "square", 0.08); setTimeout(() => this.playTone(1174, 0.18, "square", 0.08), 100); }
-  wrong() { this.playTone(220, 0.25, "sawtooth", 0.07); setTimeout(() => this.playTone(165, 0.3, "sawtooth", 0.07), 120); }
-  countdownBeep() { this.playTone(660, 0.15, "sine", 0.1); }
-  lightsOut() { this.playTone(1320, 0.4, "sine", 0.12); }
+  correct() {
+    this.playTone(880, 0.12, "square", 0.08);
+    setTimeout(() => this.playTone(1174, 0.18, "square", 0.08), 100);
+  }
+  wrong() {
+    this.playTone(220, 0.25, "sawtooth", 0.07);
+    setTimeout(() => this.playTone(165, 0.3, "sawtooth", 0.07), 120);
+  }
+  countdownBeep() { this.playTone(660, 0.15, "sine", 0.12); }
+  lightsOut() {
+    this.playTone(880, 0.15, "sine", 0.1);
+    setTimeout(() => this.playTone(1320, 0.4, "sine", 0.12), 80);
+  }
   chequered() {
     [0, 100, 200, 300, 400].forEach((d, i) =>
       setTimeout(() => this.playTone(660 + i * 110, 0.15, "sine", 0.08), d)
@@ -105,7 +154,7 @@ class SoundEngine {
 
   destroy() {
     if (this.started && this.ctx) {
-      this.engineOsc.stop();
+      this.oscs.forEach(({ osc }) => osc.stop());
       this.ctx.close();
       this.started = false;
     }
@@ -507,25 +556,29 @@ export default function App() {
       for (let i = projected.length - 1; i > 0; i--) {
         const far = projected[i];
         const near = projected[i - 1];
-        const y1 = Math.floor(far.y);
-        const y2 = Math.floor(near.y);
+        const y1 = Math.floor(far.y);   // far = closer to horizon (small y)
+        const y2 = Math.floor(near.y);  // near = closer to camera (large y)
 
-        if (y2 >= y1 || y1 < horizon || y2 > viewHeight + 5) continue;
+        // Skip degenerate strips: y1 should be ABOVE y2 on screen
+        if (y1 >= y2 || y2 < horizon || y1 > viewHeight + 5) continue;
 
         // Alternating colours for speed perception (/ 3 = faster flicker)
         const alt = Math.floor(far.segmentIndex / 3) % 2;
 
+        // y1 = far (top, near horizon), y2 = near (bottom, near camera)
+        const stripH = y2 - y1;
+
         // Grass
         ctx.fillStyle = alt ? "#0c4512" : "#07380c";
-        ctx.fillRect(0, y2, W, y1 - y2 + 1);
+        ctx.fillRect(0, y1, W, stripH + 1);
 
-        // Road surface (trapezoid)
+        // Road surface (trapezoid: far edge at top, near edge at bottom)
         ctx.fillStyle = alt ? "#38383c" : "#2e2e32";
         ctx.beginPath();
-        ctx.moveTo(near.x - near.w / 2, y2);
-        ctx.lineTo(near.x + near.w / 2, y2);
+        ctx.moveTo(far.x - far.w / 2, y1);
         ctx.lineTo(far.x + far.w / 2, y1);
-        ctx.lineTo(far.x - far.w / 2, y1);
+        ctx.lineTo(near.x + near.w / 2, y2);
+        ctx.lineTo(near.x - near.w / 2, y2);
         ctx.fill();
 
         // Kerbs (red/white alternating)
@@ -534,40 +587,42 @@ export default function App() {
         ctx.fillStyle = alt ? "#cc1111" : "#ddd";
         // Left kerb
         ctx.beginPath();
-        ctx.moveTo(near.x - near.w / 2 - kNear, y2);
-        ctx.lineTo(near.x - near.w / 2, y2);
+        ctx.moveTo(far.x - far.w / 2 - kFar, y1);
         ctx.lineTo(far.x - far.w / 2, y1);
-        ctx.lineTo(far.x - far.w / 2 - kFar, y1);
+        ctx.lineTo(near.x - near.w / 2, y2);
+        ctx.lineTo(near.x - near.w / 2 - kNear, y2);
         ctx.fill();
         // Right kerb
         ctx.beginPath();
-        ctx.moveTo(near.x + near.w / 2, y2);
-        ctx.lineTo(near.x + near.w / 2 + kNear, y2);
+        ctx.moveTo(far.x + far.w / 2, y1);
         ctx.lineTo(far.x + far.w / 2 + kFar, y1);
-        ctx.lineTo(far.x + far.w / 2, y1);
+        ctx.lineTo(near.x + near.w / 2 + kNear, y2);
+        ctx.lineTo(near.x + near.w / 2, y2);
         ctx.fill();
 
         // White edge lines
         ctx.fillStyle = "rgba(255,255,255,0.4)";
         const edgeW = Math.max(1, near.w * 0.003);
+        // Left edge
         ctx.beginPath();
-        ctx.moveTo(near.x - near.w / 2, y2);
-        ctx.lineTo(near.x - near.w / 2 + edgeW, y2);
+        ctx.moveTo(far.x - far.w / 2, y1);
         ctx.lineTo(far.x - far.w / 2 + edgeW, y1);
-        ctx.lineTo(far.x - far.w / 2, y1);
+        ctx.lineTo(near.x - near.w / 2 + edgeW, y2);
+        ctx.lineTo(near.x - near.w / 2, y2);
         ctx.fill();
+        // Right edge
         ctx.beginPath();
-        ctx.moveTo(near.x + near.w / 2 - edgeW, y2);
-        ctx.lineTo(near.x + near.w / 2, y2);
+        ctx.moveTo(far.x + far.w / 2 - edgeW, y1);
         ctx.lineTo(far.x + far.w / 2, y1);
-        ctx.lineTo(far.x + far.w / 2 - edgeW, y1);
+        ctx.lineTo(near.x + near.w / 2, y2);
+        ctx.lineTo(near.x + near.w / 2 - edgeW, y2);
         ctx.fill();
 
         // Center dashes
         if (alt) {
           ctx.fillStyle = "rgba(255,255,255,0.12)";
           const centerX = (near.x + far.x) / 2;
-          ctx.fillRect(centerX - 1, y2, 2, y1 - y2);
+          ctx.fillRect(centerX - 1, y1, 2, stripH);
         }
 
         // ── Roadside trees (every 9 segments) ──
