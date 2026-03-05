@@ -352,16 +352,17 @@ export default function App() {
     });
     game.segments = buildTrackSegments();
 
-    // Initialize AI cars — close together so they're clearly visible
+    // Initialize AI cars — tight pack, all visible ahead at start (P6)
     game.aiCars = AI_CARS.map((car, i) => ({
       ...car,
-      rank: i + 1,                              // 1 = fastest AI
-      segmentsAhead: 6 + i * 6,                 // close spacing: 6, 12, 18, 24, 30
-      targetSegAhead: 6 + i * 6,
-      lane: ((i % 2) * 2 - 1) * 0.35,          // alternating left/right
-      targetLane: ((i % 2) * 2 - 1) * 0.35,
+      rank: i + 1,
+      segmentsAhead: 3 + i * 3.5,              // tight pack: 3, 6.5, 10, 13.5, 17
+      targetSegAhead: 3 + i * 3.5,
+      lane: ((i % 2) * 2 - 1) * 0.3,           // alternating left/right
+      targetLane: ((i % 2) * 2 - 1) * 0.3,
       bobPhase: Math.random() * Math.PI * 2,
-      laneChangeTimer: 40 + Math.random() * 60,
+      laneChangeTimer: 30 + Math.random() * 40,
+      overtaking: false,                         // flag for faster lerp during overtakes
     }));
   }, []);
 
@@ -413,20 +414,38 @@ export default function App() {
       game.boostTimer = TUNING.BOOST_DURATION;
       game.targetSpeed = TUNING.BOOST_SPEED;
 
-      // Trigger overtake animation: move player to opposite lane of car being passed
+      // OVERTAKE ANIMATION: snap the car-to-pass close, then player blasts past
       const carToPass = game.aiCars.find(c => c.rank === previousPosition - 1);
       if (carToPass) {
-        carToPass.targetSegAhead = 3; // bring very close for visible pass
-        carToPass.segmentsAhead = Math.min(carToPass.segmentsAhead, 12); // snap closer if far away
-        game.playerLaneTarget = carToPass.lane > 0 ? -0.5 : 0.5;
+        // Snap the car close ahead so the overtake is visible
+        carToPass.segmentsAhead = Math.min(carToPass.segmentsAhead, 5);
+        carToPass.targetSegAhead = -3; // it will drift behind as we pass
+        carToPass.overtaking = true;
+        // Player swerves to opposite side for the pass
+        const passLane = carToPass.lane > 0 ? -0.6 : 0.6;
+        game.playerLaneTarget = passLane;
+        // Push the passed car to the other lane
+        carToPass.targetLane = -passLane * 0.5;
       }
     } else {
-      // Slow down + screen shake + brake smoke
+      // DEMOTION: car behind zooms past player
       if (soundRef.current) soundRef.current.wrong();
       setPosition(calcPosition(correctCount, questionIndex + 1));
       game.shakeTimer = TUNING.SHAKE_DURATION;
-      game.brakeTimer = 40;
+      game.brakeTimer = 50;
       game.targetSpeed = TUNING.SLOW_SPEED;
+
+      // Find the car that will pass us (the one just behind)
+      const carPassing = game.aiCars.find(c => c.rank === position);
+      if (carPassing) {
+        carPassing.segmentsAhead = -2; // start behind
+        carPassing.targetSegAhead = 8; // zoom past to ahead
+        carPassing.overtaking = true;
+        // It passes on one side
+        const passLane = game.playerLane > 0 ? -0.5 : 0.5;
+        carPassing.targetLane = passLane;
+        carPassing.lane = passLane;
+      }
     }
 
     setShowFact(true);
@@ -485,20 +504,27 @@ export default function App() {
 
       // ─── PHYSICS UPDATE ───
       if (isRacing || isQuestion) {
-        // Smooth speed interpolation
-        const lerpRate = isQuestion ? 0.003 : 0.015;
+        // Speed interpolation — quick to accelerate on boost, moderate otherwise
+        const lerpRate = isQuestion ? 0.003 : (g.boostTimer > 0 ? 0.04 : 0.02);
         g.speed += (g.targetSpeed - g.speed) * lerpRate;
         g.speed = Math.max(0.05, g.speed);
 
-        // Slow down in corners — lerp toward a corner-appropriate speed
+        // Slow down in corners — heavy braking, proper racing feel
         const curSegIdx = Math.floor(g.position) % g.segments.length;
         const curSeg = g.segments[curSegIdx];
         const curveIntensity = Math.abs(curSeg ? curSeg.curve : 0);
-        if (curveIntensity > 10 && g.boostTimer <= 0) {
-          // Target speed: full on straights, down to ~0.6 on tightest corners (curve 50)
-          const cornerSpeed = Math.max(0.6, TUNING.BASE_SPEED * (1 - curveIntensity * 0.012));
+        if (curveIntensity > 8 && g.boostTimer <= 0) {
+          // Heavy braking: curve 40 → target speed ~0.3, curve 20 → ~0.65
+          const cornerSpeed = Math.max(0.25, TUNING.BASE_SPEED * (1 - curveIntensity * 0.02));
           if (g.speed > cornerSpeed) {
-            g.speed += (cornerSpeed - g.speed) * 0.06; // smooth braking
+            // Brake hard on entry, then hold speed through corner
+            const brakeRate = g.speed > cornerSpeed + 0.3 ? 0.12 : 0.04;
+            g.speed += (cornerSpeed - g.speed) * brakeRate;
+          }
+        } else if (curveIntensity <= 8 && g.boostTimer <= 0) {
+          // On straights, accelerate back toward base speed
+          if (g.speed < TUNING.BASE_SPEED) {
+            g.speed += (TUNING.BASE_SPEED - g.speed) * 0.02; // gradual acceleration
           }
         }
 
@@ -514,9 +540,10 @@ export default function App() {
         if (g.shakeTimer > 0) g.shakeTimer--;
         if (g.brakeTimer > 0) g.brakeTimer--;
 
-        // Player lane animation
-        g.playerLane += (g.playerLaneTarget - g.playerLane) * 0.06;
-        if (g.boostTimer <= 0) g.playerLaneTarget *= 0.97; // drift to center slowly
+        // Player lane animation — snappy during overtakes, slow drift back
+        const laneLerp = g.boostTimer > 0 ? 0.1 : 0.06;
+        g.playerLane += (g.playerLaneTarget - g.playerLane) * laneLerp;
+        if (g.boostTimer <= 0) g.playerLaneTarget *= 0.985; // slow drift back to center
 
         // Update corner name display
         const segIndex = Math.floor(g.position) % g.segments.length;
@@ -524,36 +551,42 @@ export default function App() {
         if (segName && segName !== cornerName) setCornerName(segName);
         setRaceProgress(Math.min(g.totalProgress, 1));
 
-        // Update AI car positions
+        // Update AI car positions — tight pack racing
         const playerRank = position;
         g.aiCars.forEach(car => {
           car.bobPhase += 0.04;
 
-          // Target distance based on rank relative to player
-          // Cars ahead: close enough to see clearly (6-30 segs)
-          // Cars behind: negative (shown in mirrors)
+          // TIGHT pack: cars only 3-4 segments apart
+          // Cars ahead of player: close and visible
+          // Cars behind player: just behind (shown in mirrors)
           if (car.rank < playerRank) {
-            car.targetSegAhead = 6 + (playerRank - car.rank) * 7; // ahead, tightly packed
+            // Ahead: rank 1 is furthest, each 3.5 segs apart
+            car.targetSegAhead = 3 + (playerRank - car.rank) * 3.5;
           } else {
-            car.targetSegAhead = -4 - (car.rank - playerRank) * 5; // behind
+            // Behind: close behind, each 3 segs back
+            car.targetSegAhead = -2 - (car.rank - playerRank) * 3;
           }
-          // Clamp so ahead cars stay within view
-          car.targetSegAhead = Math.min(car.targetSegAhead, 50);
-          car.segmentsAhead += (car.targetSegAhead - car.segmentsAhead) * 0.04; // faster lerp
+          car.targetSegAhead = Math.min(car.targetSegAhead, 30);
 
-          // Lane changes
+          // Lerp speed depends on whether we're animating an overtake
+          const distToTarget = Math.abs(car.targetSegAhead - car.segmentsAhead);
+          const lerpSpeed = car.overtaking ? 0.08 : (distToTarget > 10 ? 0.06 : 0.03);
+          car.segmentsAhead += (car.targetSegAhead - car.segmentsAhead) * lerpSpeed;
+
+          // Clear overtaking flag when close to target
+          if (distToTarget < 1) car.overtaking = false;
+
+          // Lane changes — more frequent when close to player
           car.laneChangeTimer--;
           if (car.laneChangeTimer <= 0) {
-            car.targetLane = (Math.random() - 0.5) * 0.5;
-            // Avoid player's lane when close
-            if (car.segmentsAhead > 0 && car.segmentsAhead < 15) {
-              if (Math.abs(car.targetLane - g.playerLane) < 0.25) {
-                car.targetLane = g.playerLane > 0 ? -0.4 : 0.4;
-              }
+            car.targetLane = (Math.random() - 0.5) * 0.6;
+            if (car.segmentsAhead > 0 && car.segmentsAhead < 10) {
+              // Stay out of player's path
+              car.targetLane = g.playerLane > 0 ? -0.35 : 0.35;
             }
-            car.laneChangeTimer = 50 + Math.random() * 80;
+            car.laneChangeTimer = 35 + Math.random() * 50;
           }
-          car.lane += (car.targetLane - car.lane) * 0.025;
+          car.lane += (car.targetLane - car.lane) * 0.04;
         });
 
         // Trigger next question after racing segment
