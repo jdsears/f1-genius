@@ -404,47 +404,65 @@ export default function App() {
     const previousPosition = position;
 
     if (isCorrect) {
-      // Speed boost + DRS effect
       if (soundRef.current) soundRef.current.correct();
-      setCorrectCount(prev => {
-        const newCount = prev + 1;
-        setPosition(calcPosition(newCount, questionIndex + 1));
-        return newCount;
-      });
+      const newCorrect = correctCount + 1;
+      const newPosition = calcPosition(newCorrect, questionIndex + 1);
+      setCorrectCount(newCorrect);
+      setPosition(newPosition);
+
       game.boostTimer = TUNING.BOOST_DURATION;
       game.targetSpeed = TUNING.BOOST_SPEED;
 
-      // OVERTAKE ANIMATION: snap the car-to-pass close, then player blasts past
-      const carToPass = game.aiCars.find(c => c.rank === previousPosition - 1);
-      if (carToPass) {
-        // Snap the car close ahead so the overtake is visible
-        carToPass.segmentsAhead = Math.min(carToPass.segmentsAhead, 5);
-        carToPass.targetSegAhead = -3; // it will drift behind as we pass
-        carToPass.overtaking = true;
-        // Player swerves to opposite side for the pass
-        const passLane = carToPass.lane > 0 ? -0.6 : 0.6;
+      // OVERTAKE: find ALL cars we're passing (old position → new position)
+      // Cars with rank between newPosition and previousPosition-1 are being passed
+      const carsBeingPassed = game.aiCars
+        .filter(c => c.rank >= newPosition && c.rank < previousPosition)
+        .sort((a, b) => b.rank - a.rank); // closest first (highest rank = nearest)
+
+      if (carsBeingPassed.length > 0) {
+        // The nearest car gets the dramatic close-pass animation
+        const nearestCar = carsBeingPassed[0];
+        nearestCar.segmentsAhead = 4; // snap close ahead
+        nearestCar.targetSegAhead = -4; // drift behind
+        nearestCar.overtaking = true;
+
+        // Player swerves to opposite side
+        const passLane = nearestCar.lane > 0 ? -0.6 : 0.6;
         game.playerLaneTarget = passLane;
-        // Push the passed car to the other lane
-        carToPass.targetLane = -passLane * 0.5;
+        nearestCar.targetLane = -passLane * 0.5;
+
+        // Other passed cars also move behind
+        carsBeingPassed.slice(1).forEach(car => {
+          car.targetSegAhead = -3 - (car.rank - newPosition) * 3;
+          car.overtaking = true;
+        });
       }
     } else {
-      // DEMOTION: car behind zooms past player
       if (soundRef.current) soundRef.current.wrong();
-      setPosition(calcPosition(correctCount, questionIndex + 1));
+      const newPosition = calcPosition(correctCount, questionIndex + 1);
+      const positionLost = newPosition > previousPosition;
+      setPosition(newPosition);
+
       game.shakeTimer = TUNING.SHAKE_DURATION;
       game.brakeTimer = 50;
       game.targetSpeed = TUNING.SLOW_SPEED;
 
-      // Find the car that will pass us (the one just behind)
-      const carPassing = game.aiCars.find(c => c.rank === position);
-      if (carPassing) {
-        carPassing.segmentsAhead = -2; // start behind
-        carPassing.targetSegAhead = 8; // zoom past to ahead
-        carPassing.overtaking = true;
-        // It passes on one side
-        const passLane = game.playerLane > 0 ? -0.5 : 0.5;
-        carPassing.targetLane = passLane;
-        carPassing.lane = passLane;
+      // DEMOTION: if we actually lost position, a car zooms past
+      if (positionLost) {
+        // Find cars that just passed us (ranks between old and new position)
+        const carsPassing = game.aiCars
+          .filter(c => c.rank >= previousPosition && c.rank < newPosition)
+          .sort((a, b) => a.rank - b.rank); // nearest first
+
+        if (carsPassing.length > 0) {
+          const passingCar = carsPassing[0];
+          passingCar.segmentsAhead = -1; // start just behind
+          passingCar.targetSegAhead = 8; // zoom past
+          passingCar.overtaking = true;
+          const passLane = game.playerLane > 0 ? -0.5 : 0.5;
+          passingCar.targetLane = passLane;
+          passingCar.lane = passLane;
+        }
       }
     }
 
@@ -556,32 +574,33 @@ export default function App() {
         g.aiCars.forEach(car => {
           car.bobPhase += 0.04;
 
-          // TIGHT pack: cars only 3-4 segments apart
-          // Cars ahead of player: close and visible
-          // Cars behind player: just behind (shown in mirrors)
-          if (car.rank < playerRank) {
-            // Ahead: rank 1 is furthest, each 3.5 segs apart
-            car.targetSegAhead = 3 + (playerRank - car.rank) * 3.5;
-          } else {
-            // Behind: close behind, each 3 segs back
-            car.targetSegAhead = -2 - (car.rank - playerRank) * 3;
+          // During overtake animation, DON'T override targetSegAhead
+          // Let the overtake play out before resuming normal positioning
+          if (!car.overtaking) {
+            // TIGHT pack: cars only 3-4 segments apart
+            if (car.rank < playerRank) {
+              car.targetSegAhead = 3 + (playerRank - car.rank) * 3.5;
+            } else {
+              car.targetSegAhead = -2 - (car.rank - playerRank) * 3;
+            }
+            car.targetSegAhead = Math.min(car.targetSegAhead, 30);
           }
-          car.targetSegAhead = Math.min(car.targetSegAhead, 30);
 
-          // Lerp speed depends on whether we're animating an overtake
+          // Lerp toward target — faster during overtakes
           const distToTarget = Math.abs(car.targetSegAhead - car.segmentsAhead);
-          const lerpSpeed = car.overtaking ? 0.08 : (distToTarget > 10 ? 0.06 : 0.03);
+          const lerpSpeed = car.overtaking ? 0.1 : (distToTarget > 10 ? 0.06 : 0.03);
           car.segmentsAhead += (car.targetSegAhead - car.segmentsAhead) * lerpSpeed;
 
           // Clear overtaking flag when close to target
-          if (distToTarget < 1) car.overtaking = false;
+          if (car.overtaking && distToTarget < 1.5) {
+            car.overtaking = false;
+          }
 
           // Lane changes — more frequent when close to player
           car.laneChangeTimer--;
-          if (car.laneChangeTimer <= 0) {
+          if (car.laneChangeTimer <= 0 && !car.overtaking) {
             car.targetLane = (Math.random() - 0.5) * 0.6;
             if (car.segmentsAhead > 0 && car.segmentsAhead < 10) {
-              // Stay out of player's path
               car.targetLane = g.playerLane > 0 ? -0.35 : 0.35;
             }
             car.laneChangeTimer = 35 + Math.random() * 50;
@@ -984,7 +1003,7 @@ export default function App() {
       // Real T-cam: you see the halo, nose tip fading into distance,
       // wheel tops barely visible at edges, and a compact steering wheel display
 
-      const noseTop = H * 0.78;
+      const noseTop = H * 0.68;
 
       // ── Nose cone — slim, long vanishing point into distance ──
       const noseGrad = ctx.createLinearGradient(W / 2 - W * 0.04, 0, W / 2 + W * 0.04, 0);
@@ -997,10 +1016,10 @@ export default function App() {
       ctx.beginPath();
       ctx.moveTo(W / 2 - W * 0.008, noseTop);       // very narrow tip
       ctx.lineTo(W / 2 + W * 0.008, noseTop);
-      ctx.lineTo(W / 2 + W * 0.045, H * 0.92);      // widens gradually
+      ctx.lineTo(W / 2 + W * 0.045, H * 0.88);      // widens gradually
       ctx.lineTo(W / 2 + W * 0.065, H);
       ctx.lineTo(W / 2 - W * 0.065, H);
-      ctx.lineTo(W / 2 - W * 0.045, H * 0.92);
+      ctx.lineTo(W / 2 - W * 0.045, H * 0.88);
       ctx.fill();
 
       // Nose highlight line
@@ -1015,22 +1034,22 @@ export default function App() {
       // Left wheel — only the top arc visible, mostly off-screen
       ctx.fillStyle = "#0d0d0d";
       ctx.beginPath();
-      ctx.ellipse(W * 0.035, H * 0.82, W * 0.028, H * 0.06, -0.15, -Math.PI * 0.6, Math.PI * 0.2);
+      ctx.ellipse(W * 0.035, H * 0.73, W * 0.028, H * 0.06, -0.15, -Math.PI * 0.6, Math.PI * 0.2);
       ctx.fill();
       // Tyre texture
       ctx.fillStyle = "#151515";
       ctx.beginPath();
-      ctx.ellipse(W * 0.035, H * 0.82, W * 0.022, H * 0.048, -0.15, -Math.PI * 0.6, Math.PI * 0.2);
+      ctx.ellipse(W * 0.035, H * 0.73, W * 0.022, H * 0.048, -0.15, -Math.PI * 0.6, Math.PI * 0.2);
       ctx.fill();
 
       // Right wheel — mirror of left
       ctx.fillStyle = "#0d0d0d";
       ctx.beginPath();
-      ctx.ellipse(W * 0.965, H * 0.82, W * 0.028, H * 0.06, 0.15, Math.PI * 0.8, Math.PI * 1.6);
+      ctx.ellipse(W * 0.965, H * 0.73, W * 0.028, H * 0.06, 0.15, Math.PI * 0.8, Math.PI * 1.6);
       ctx.fill();
       ctx.fillStyle = "#151515";
       ctx.beginPath();
-      ctx.ellipse(W * 0.965, H * 0.82, W * 0.022, H * 0.048, 0.15, Math.PI * 0.8, Math.PI * 1.6);
+      ctx.ellipse(W * 0.965, H * 0.73, W * 0.022, H * 0.048, 0.15, Math.PI * 0.8, Math.PI * 1.6);
       ctx.fill();
 
       // ── Suspension wishbones (very thin, subtle) ──
@@ -1038,27 +1057,27 @@ export default function App() {
       ctx.lineWidth = Math.max(1, W * 0.0015);
       // Left upper/lower
       ctx.beginPath();
-      ctx.moveTo(W / 2 - W * 0.02, H * 0.80);
-      ctx.lineTo(W * 0.06, H * 0.79);
+      ctx.moveTo(W / 2 - W * 0.02, H * 0.71);
+      ctx.lineTo(W * 0.06, H * 0.70);
       ctx.stroke();
       ctx.beginPath();
-      ctx.moveTo(W / 2 - W * 0.025, H * 0.85);
-      ctx.lineTo(W * 0.06, H * 0.84);
+      ctx.moveTo(W / 2 - W * 0.025, H * 0.76);
+      ctx.lineTo(W * 0.06, H * 0.75);
       ctx.stroke();
       // Right upper/lower
       ctx.beginPath();
-      ctx.moveTo(W / 2 + W * 0.02, H * 0.80);
-      ctx.lineTo(W * 0.94, H * 0.79);
+      ctx.moveTo(W / 2 + W * 0.02, H * 0.71);
+      ctx.lineTo(W * 0.94, H * 0.70);
       ctx.stroke();
       ctx.beginPath();
-      ctx.moveTo(W / 2 + W * 0.025, H * 0.85);
-      ctx.lineTo(W * 0.94, H * 0.84);
+      ctx.moveTo(W / 2 + W * 0.025, H * 0.76);
+      ctx.lineTo(W * 0.94, H * 0.75);
       ctx.stroke();
 
       // ── Side mirrors (small pods) ──
       const mirrorW = W * 0.022;
       const mirrorH = H * 0.016;
-      const mirrorY = H * 0.72;
+      const mirrorY = H * 0.63;
       // Left mirror housing
       ctx.fillStyle = "#18181f";
       ctx.fillRect(W * 0.10, mirrorY, mirrorW, mirrorH);
@@ -1083,7 +1102,7 @@ export default function App() {
       // ── Halo — the titanium bar across the top of the cockpit ──
       // Central pillar (thin vertical)
       ctx.fillStyle = "rgba(55,55,65,0.55)";
-      ctx.fillRect(W / 2 - 2, noseTop - H * 0.12, 4, H * 0.12);
+      ctx.fillRect(W / 2 - 2, noseTop - H * 0.14, 4, H * 0.14);
 
       // ── Steering wheel display (compact, bottom center) ──
       const dashY = H * 0.92;
