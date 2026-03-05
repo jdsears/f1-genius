@@ -14,7 +14,6 @@ function buildTrackSegments() {
   for (let rep = 0; rep < 8; rep++) {
     for (const corner of SILVERSTONE_CORNERS) {
       for (let i = 0; i < corner.length; i++) {
-        // Sine envelope: smooth entry and exit through each corner
         const progress = i / corner.length;
         const curveAtPoint = corner.curve * Math.sin(progress * Math.PI);
         segments.push({ curve: curveAtPoint, cornerName: corner.name });
@@ -39,12 +38,128 @@ function positionText(p) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// SOUND ENGINE (Web Audio API)
+// ═══════════════════════════════════════════════════════════════
+
+class SoundEngine {
+  constructor() {
+    this.ctx = null;
+    this.engineOsc = null;
+    this.engineGain = null;
+    this.started = false;
+  }
+
+  init() {
+    if (this.started) return;
+    try {
+      this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+      // Engine drone
+      this.engineOsc = this.ctx.createOscillator();
+      this.engineGain = this.ctx.createGain();
+      this.engineOsc.type = "sawtooth";
+      this.engineOsc.frequency.value = 80;
+      this.engineGain.gain.value = 0;
+      this.engineOsc.connect(this.engineGain);
+      this.engineGain.connect(this.ctx.destination);
+      this.engineOsc.start();
+      this.started = true;
+    } catch (_) { /* audio not available */ }
+  }
+
+  updateEngine(speed) {
+    if (!this.started) return;
+    const freq = 60 + speed * 140;
+    const vol = Math.min(0.08, speed * 0.04);
+    this.engineOsc.frequency.setTargetAtTime(freq, this.ctx.currentTime, 0.05);
+    this.engineGain.gain.setTargetAtTime(vol, this.ctx.currentTime, 0.05);
+  }
+
+  stopEngine() {
+    if (!this.started) return;
+    this.engineGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.1);
+  }
+
+  playTone(freq, duration, type = "square", vol = 0.1) {
+    if (!this.started) return;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = type;
+    osc.frequency.value = freq;
+    gain.gain.value = vol;
+    gain.gain.setTargetAtTime(0, this.ctx.currentTime + duration * 0.7, duration * 0.2);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start();
+    osc.stop(this.ctx.currentTime + duration);
+  }
+
+  correct() { this.playTone(880, 0.12, "square", 0.08); setTimeout(() => this.playTone(1174, 0.18, "square", 0.08), 100); }
+  wrong() { this.playTone(220, 0.25, "sawtooth", 0.07); setTimeout(() => this.playTone(165, 0.3, "sawtooth", 0.07), 120); }
+  countdownBeep() { this.playTone(660, 0.15, "sine", 0.1); }
+  lightsOut() { this.playTone(1320, 0.4, "sine", 0.12); }
+  chequered() {
+    [0, 100, 200, 300, 400].forEach((d, i) =>
+      setTimeout(() => this.playTone(660 + i * 110, 0.15, "sine", 0.08), d)
+    );
+  }
+
+  destroy() {
+    if (this.started && this.ctx) {
+      this.engineOsc.stop();
+      this.ctx.close();
+      this.started = false;
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CONFETTI
+// ═══════════════════════════════════════════════════════════════
+
+function createConfetti(count = 120) {
+  const particles = [];
+  for (let i = 0; i < count; i++) {
+    particles.push({
+      x: Math.random(),
+      y: -Math.random() * 0.3,
+      vx: (Math.random() - 0.5) * 0.008,
+      vy: 0.003 + Math.random() * 0.006,
+      size: 3 + Math.random() * 5,
+      color: ["#FFD700", "#DC0000", "#fff", "#4ade80", "#FF8700", "#2546FF"][Math.floor(Math.random() * 6)],
+      rot: Math.random() * 360,
+      rotSpeed: (Math.random() - 0.5) * 8,
+    });
+  }
+  return particles;
+}
+
+function drawConfetti(ctx, particles, W, H) {
+  particles.forEach(p => {
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.00008;
+    p.rot += p.rotSpeed;
+    const px = p.x * W;
+    const py = p.y * H;
+    if (py > H + 20) return;
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate((p.rot * Math.PI) / 180);
+    ctx.fillStyle = p.color;
+    ctx.fillRect(-p.size / 2, -p.size / 4, p.size, p.size / 2);
+    ctx.restore();
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ═══════════════════════════════════════════════════════════════
 
 export default function App() {
   const canvasRef = useRef(null);
   const animFrameRef = useRef(null);
+  const soundRef = useRef(null);
+  const confettiRef = useRef(null);
 
   // ── React state (drives UI overlays) ──
   const [gameState, setGameState] = useState(GS.START);
@@ -71,9 +186,17 @@ export default function App() {
     questionsAsked: 0,     // total questions shown so far
     boostTimer: 0,         // frames remaining of DRS boost effect
     shakeTimer: 0,         // frames remaining of screen shake
+    brakeTimer: 0,         // frames remaining of brake smoke
     totalProgress: 0,      // overall race completion 0→1
     aiCars: [],            // AI competitor data
+    startScreenPos: 0,     // position for start screen background animation
   }).current;
+
+  // Initialize sound engine
+  useEffect(() => {
+    soundRef.current = new SoundEngine();
+    return () => { if (soundRef.current) soundRef.current.destroy(); };
+  }, []);
 
   // ═══════════════════════════════════════════════════════════
   // GAME INITIALIZATION
@@ -101,12 +224,12 @@ export default function App() {
     });
     game.segments = buildTrackSegments();
 
-    // Initialize AI cars
+    // Initialize AI cars — spaced so all are visible within DRAW_DISTANCE
     game.aiCars = AI_CARS.map((car, i) => ({
       ...car,
       rank: i + 1,                              // 1 = fastest AI
-      segmentsAhead: 8 + i * 7,                 // initial distance ahead
-      targetSegAhead: 8 + i * 7,
+      segmentsAhead: 10 + i * 12,               // initial distance ahead (wider spread)
+      targetSegAhead: 10 + i * 12,
       lane: ((i % 2) * 2 - 1) * 0.3,           // alternating left/right
       targetLane: ((i % 2) * 2 - 1) * 0.3,
       bobPhase: Math.random() * Math.PI * 2,
@@ -120,17 +243,22 @@ export default function App() {
 
   const startRace = useCallback(() => {
     initializeGame();
+    if (soundRef.current) soundRef.current.init();
+    confettiRef.current = null;
     setGameState(GS.COUNTDOWN);
     let count = 5;
     setCountdownNum(5);
+    if (soundRef.current) soundRef.current.countdownBeep();
     const interval = setInterval(() => {
       count--;
       if (count <= 0) {
         clearInterval(interval);
         game.targetSpeed = TUNING.BASE_SPEED;
         setGameState(GS.RACING);
+        if (soundRef.current) soundRef.current.lightsOut();
       } else {
         setCountdownNum(count);
+        if (soundRef.current) soundRef.current.countdownBeep();
       }
     }, TUNING.COUNTDOWN_INTERVAL);
   }, [initializeGame]);
@@ -148,6 +276,7 @@ export default function App() {
 
     if (isCorrect) {
       // Speed boost + DRS effect
+      if (soundRef.current) soundRef.current.correct();
       setCorrectCount(prev => {
         const newCount = prev + 1;
         setPosition(calcPosition(newCount, questionIndex + 1));
@@ -159,13 +288,16 @@ export default function App() {
       // Trigger overtake animation: move player to opposite lane of car being passed
       const carToPass = game.aiCars.find(c => c.rank === previousPosition - 1);
       if (carToPass) {
-        carToPass.targetSegAhead = 4; // bring close for visible pass
-        game.playerLaneTarget = carToPass.lane > 0 ? -0.4 : 0.4;
+        carToPass.targetSegAhead = 3; // bring very close for visible pass
+        carToPass.segmentsAhead = Math.min(carToPass.segmentsAhead, 12); // snap closer if far away
+        game.playerLaneTarget = carToPass.lane > 0 ? -0.5 : 0.5;
       }
     } else {
-      // Slow down + screen shake
+      // Slow down + screen shake + brake smoke
+      if (soundRef.current) soundRef.current.wrong();
       setPosition(calcPosition(correctCount, questionIndex + 1));
       game.shakeTimer = TUNING.SHAKE_DURATION;
+      game.brakeTimer = 40;
       game.targetSpeed = TUNING.SLOW_SPEED;
     }
 
@@ -203,6 +335,11 @@ export default function App() {
     const { FOV, CAMERA_HEIGHT, ROAD_HALF_WIDTH, DRAW_DISTANCE, CURVE_FACTOR } = RENDER;
     const g = game;
 
+    // Ensure segments exist for start screen animation
+    if (g.segments.length === 0) {
+      g.segments = buildTrackSegments();
+    }
+
     const renderFrame = () => {
       if (!running) return;
       const ctx = canvas.getContext("2d");
@@ -212,6 +349,11 @@ export default function App() {
       const isQuestion = gameState === GS.QUESTION;
       const dashboardHeight = Math.floor(H * 0.14);
       const viewHeight = H - dashboardHeight; // drawable area above dashboard
+
+      // ─── START SCREEN ANIMATION ───
+      if (gameState === GS.START) {
+        g.startScreenPos += 0.6;
+      }
 
       // ─── PHYSICS UPDATE ───
       if (isRacing || isQuestion) {
@@ -224,13 +366,17 @@ export default function App() {
         g.position += g.speed;
         g.totalProgress += g.speed * 0.0001;
 
+        // Update engine sound
+        if (soundRef.current) soundRef.current.updateEngine(g.speed);
+
         // Decrement timers
         if (g.boostTimer > 0) g.boostTimer--;
         if (g.shakeTimer > 0) g.shakeTimer--;
+        if (g.brakeTimer > 0) g.brakeTimer--;
 
         // Player lane animation
-        g.playerLane += (g.playerLaneTarget - g.playerLane) * 0.04;
-        if (g.boostTimer <= 0) g.playerLaneTarget *= 0.98; // drift to center
+        g.playerLane += (g.playerLaneTarget - g.playerLane) * 0.06;
+        if (g.boostTimer <= 0) g.playerLaneTarget *= 0.97; // drift to center slowly
 
         // Update corner name display
         const segIndex = Math.floor(g.position) % g.segments.length;
@@ -245,11 +391,13 @@ export default function App() {
 
           // Target distance based on rank relative to player
           if (car.rank < playerRank) {
-            car.targetSegAhead = 6 + (playerRank - car.rank) * 8; // ahead
+            car.targetSegAhead = 10 + (playerRank - car.rank) * 14; // ahead — wider spread
           } else {
-            car.targetSegAhead = -4 - (car.rank - playerRank) * 5; // behind
+            car.targetSegAhead = -6 - (car.rank - playerRank) * 8; // behind
           }
-          car.segmentsAhead += (car.targetSegAhead - car.segmentsAhead) * 0.015;
+          // Clamp to draw distance so cars don't disappear
+          car.targetSegAhead = Math.min(car.targetSegAhead, DRAW_DISTANCE - 5);
+          car.segmentsAhead += (car.targetSegAhead - car.segmentsAhead) * 0.02;
 
           // Lane changes
           car.laneChangeTimer--;
@@ -280,6 +428,8 @@ export default function App() {
             setFinalPosition(fp);
             setPosition(fp);
             setGameState(GS.FINISH);
+            if (soundRef.current) { soundRef.current.chequered(); soundRef.current.stopEngine(); }
+            if (fp === 1) confettiRef.current = createConfetti(150);
           }
         }
       }
@@ -291,8 +441,10 @@ export default function App() {
       //   screenW = roadWidth * scale
       //   screenX = center + (accumulated_curve - player_offset) * scale
       const horizon = viewHeight * 0.4;
-      const baseSegIndex = Math.floor(g.position);
-      const fractionalPos = g.position - baseSegIndex;
+      // Use startScreenPos for start screen background animation
+      const effectivePos = (isRacing || isQuestion) ? g.position : g.startScreenPos;
+      const baseSegIndex = Math.floor(effectivePos);
+      const fractionalPos = effectivePos - baseSegIndex;
 
       const projected = [];
       let curveDrift = 0;
@@ -360,8 +512,8 @@ export default function App() {
 
         if (y2 >= y1 || y1 < horizon || y2 > viewHeight + 5) continue;
 
-        // Alternating colours for speed perception
-        const alt = Math.floor(far.segmentIndex / 4) % 2;
+        // Alternating colours for speed perception (/ 3 = faster flicker)
+        const alt = Math.floor(far.segmentIndex / 3) % 2;
 
         // Grass
         ctx.fillStyle = alt ? "#0c4512" : "#07380c";
@@ -452,10 +604,12 @@ export default function App() {
         // ── AI CARS (drawn when we reach their segment) ──
         g.aiCars.forEach(car => {
           const carSeg = Math.round(car.segmentsAhead);
-          if (carSeg !== far.drawOrder || carSeg < 1) return;
+          if (carSeg !== far.drawOrder || carSeg < 2) return;
+          // Only draw if within draw distance
+          if (carSeg >= DRAW_DISTANCE - 1) return;
 
-          const carWidth = far.w * 0.06;
-          if (carWidth < 3 || far.y < horizon + 5) return;
+          const carWidth = far.w * 0.08;
+          if (carWidth < 2 || far.y < horizon + 5) return;
           const carHeight = carWidth * 0.42;
           const carX = far.x + car.lane * far.w * 0.38;
           const carY = far.y;
@@ -518,6 +672,20 @@ export default function App() {
           ctx.moveTo(sx, sy);
           ctx.lineTo(sx + (isLeft ? -1 : 1) * 25 * intensity, sy + 14 * intensity);
           ctx.stroke();
+        }
+      }
+
+      // ─── BRAKE SMOKE ───
+      if (g.brakeTimer > 0) {
+        const smokeAlpha = g.brakeTimer / 40;
+        ctx.fillStyle = `rgba(180,180,180,${smokeAlpha * 0.15})`;
+        for (let s = 0; s < 8; s++) {
+          const sx = W / 2 + (Math.random() - 0.5) * W * 0.12;
+          const sy = viewHeight * 0.75 + Math.random() * viewHeight * 0.15;
+          const sr = 5 + Math.random() * 15 * smokeAlpha;
+          ctx.beginPath();
+          ctx.arc(sx, sy, sr, 0, Math.PI * 2);
+          ctx.fill();
         }
       }
 
@@ -621,6 +789,11 @@ export default function App() {
 
       if (g.shakeTimer > 0) ctx.restore();
 
+      // ─── CONFETTI (finish screen P1) ───
+      if (confettiRef.current && gameState === GS.FINISH) {
+        drawConfetti(ctx, confettiRef.current, W, H);
+      }
+
       animFrameRef.current = requestAnimationFrame(renderFrame);
     };
 
@@ -678,7 +851,7 @@ export default function App() {
           <div style={{ fontSize: "clamp(9px, 1.1vw, 10px)", color: "rgba(255,255,255,0.15)", maxWidth: "340px", textAlign: "center", lineHeight: 1.7, marginBottom: "16px", padding: "0 12px" }}>
             Cockpit racing around Silverstone. Answer 10 F1 history questions between laps. Get ALL right to win! Each wrong answer drops a position.
           </div>
-          <button onClick={startRace} style={{ padding: "10px 30px", fontSize: "clamp(11px, 1.4vw, 13px)", fontWeight: "bold", fontFamily: "'Courier New', monospace", background: "#DC0000", color: "#fff", border: "none", borderRadius: "3px", cursor: "pointer", letterSpacing: "4px", boxShadow: "0 0 40px rgba(220,0,0,0.25)" }}>
+          <button onClick={startRace} style={{ padding: "14px 40px", fontSize: "clamp(13px, 1.8vw, 16px)", fontWeight: "bold", fontFamily: "'Courier New', monospace", background: "#DC0000", color: "#fff", border: "none", borderRadius: "4px", cursor: "pointer", letterSpacing: "4px", boxShadow: "0 0 40px rgba(220,0,0,0.25)", minHeight: "48px" }}>
             START RACE
           </button>
         </div>
@@ -717,7 +890,7 @@ export default function App() {
                 if (revealed && isCorrect) { bg = "rgba(74,222,128,0.15)"; border = "1px solid #4ade80"; }
                 else if (revealed && isSelected && !isCorrect) { bg = "rgba(220,0,0,0.15)"; border = "1px solid #DC0000"; }
                 return (
-                  <button key={i} onClick={() => handleAnswer(i)} disabled={revealed} style={{ padding: "6px 7px", fontSize: "clamp(9px, 1.3vw, 11px)", fontFamily: "'Courier New', monospace", background: bg, color: "#fff", border, borderRadius: "3px", cursor: revealed ? "default" : "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: "5px" }}>
+                  <button key={i} onClick={() => handleAnswer(i)} disabled={revealed} style={{ padding: "10px 9px", fontSize: "clamp(11px, 1.6vw, 13px)", fontFamily: "'Courier New', monospace", background: bg, color: "#fff", border, borderRadius: "4px", cursor: revealed ? "default" : "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: "6px", minHeight: "44px" }}>
                     <span style={{ width: "16px", height: "16px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "7px", fontWeight: "bold", flexShrink: 0, background: revealed && isCorrect ? "#4ade80" : revealed && isSelected ? "#DC0000" : "rgba(255,255,255,0.035)", color: revealed && (isCorrect || isSelected) ? "#fff" : "rgba(255,255,255,0.2)" }}>
                       {revealed && isCorrect ? "✓" : revealed && isSelected && !isCorrect ? "✗" : String.fromCharCode(65 + i)}
                     </span>
@@ -765,7 +938,7 @@ export default function App() {
              correctCount >= 5 ? "Good try! The history board has the answers." :
              "Study the history board and race again!"}
           </div>
-          <button onClick={() => setGameState(GS.START)} style={{ padding: "8px 26px", fontSize: "clamp(9px, 1.3vw, 12px)", fontWeight: "bold", fontFamily: "'Courier New', monospace", background: "#DC0000", color: "#fff", border: "none", borderRadius: "3px", cursor: "pointer", letterSpacing: "3px", boxShadow: "0 0 30px rgba(220,0,0,0.25)" }}>
+          <button onClick={() => { setGameState(GS.START); confettiRef.current = null; }} style={{ padding: "12px 32px", fontSize: "clamp(11px, 1.5vw, 14px)", fontWeight: "bold", fontFamily: "'Courier New', monospace", background: "#DC0000", color: "#fff", border: "none", borderRadius: "4px", cursor: "pointer", letterSpacing: "3px", boxShadow: "0 0 30px rgba(220,0,0,0.25)", minHeight: "48px" }}>
             RACE AGAIN
           </button>
           <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: "4px", background: "repeating-linear-gradient(90deg, #fff 0px, #fff 10px, #111 10px, #111 20px)" }} />
