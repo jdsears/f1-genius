@@ -43,11 +43,11 @@ export const AI_CARS = [
  * These control the OutRun-style pseudo-3D perspective.
  */
 export const RENDER = {
-  FOV: 130,              // focal length (higher = more zoom)
-  CAMERA_HEIGHT: 3.2,    // camera height in world units
-  ROAD_HALF_WIDTH: 3.8,  // road half-width in world units
-  DRAW_DISTANCE: 120,    // how many segments to render ahead
-  CURVE_FACTOR: 0.001,   // how much each segment's curve accumulates
+  FOV: 150,              // focal length — slightly zoomed for onboard feel
+  CAMERA_HEIGHT: 1.8,    // low driver-eye camera height
+  ROAD_HALF_WIDTH: 4.2,  // wider road for realism
+  DRAW_DISTANCE: 140,    // more segments for longer view distance
+  CURVE_FACTOR: 0.0008,  // curve accumulation tuned for wider road
 };
 
 /**

@@ -484,13 +484,7 @@ export default function App() {
       }
 
       // ─── ROAD PROJECTION ───
-      // Classic OutRun algorithm:
-      //   For segment n at depth z: scale = FOV / z
-      //   screenY = horizon + cameraHeight * scale
-      //   screenW = roadWidth * scale
-      //   screenX = center + (accumulated_curve - player_offset) * scale
-      const horizon = viewHeight * 0.4;
-      // Use startScreenPos for start screen background animation
+      const horizon = viewHeight * 0.35; // lower horizon = more road visible
       const effectivePos = (isRacing || isQuestion) ? g.position : g.startScreenPos;
       const baseSegIndex = Math.floor(effectivePos);
       const fractionalPos = effectivePos - baseSegIndex;
@@ -525,32 +519,57 @@ export default function App() {
         });
       }
 
-      // ─── DRAW SKY ───
-      ctx.fillStyle = "#060c1a";
-      ctx.fillRect(0, 0, W, Math.floor(horizon * 0.5));
-      const skyGrad = ctx.createLinearGradient(0, horizon * 0.5, 0, viewHeight);
-      skyGrad.addColorStop(0, "#101c35");
-      skyGrad.addColorStop(0.4, "#1e3055");
-      skyGrad.addColorStop(1, "#0a3510");
+      // ─── DRAW SKY (daytime) ───
+      const skyGrad = ctx.createLinearGradient(0, 0, 0, horizon);
+      skyGrad.addColorStop(0, "#4a90d9");
+      skyGrad.addColorStop(0.5, "#7bb8e8");
+      skyGrad.addColorStop(0.85, "#b8d8f0");
+      skyGrad.addColorStop(1, "#d4e8d0");
       ctx.fillStyle = skyGrad;
-      ctx.fillRect(0, Math.floor(horizon * 0.5), W, viewHeight);
+      ctx.fillRect(0, 0, W, horizon + 10);
 
-      // Stars
-      ctx.fillStyle = "rgba(255,255,255,0.3)";
-      for (let i = 0; i < 40; i++) {
-        ctx.fillRect((i * 151 + 20) % W, (i * 79 + 3) % (horizon * 0.7), 1, 1);
+      // Clouds (fixed positions, slowly drifting)
+      ctx.fillStyle = "rgba(255,255,255,0.6)";
+      const cloudDrift = (effectivePos * 0.02) % W;
+      for (let c = 0; c < 6; c++) {
+        const cx = ((c * 217 + 50 - cloudDrift) % (W + 200)) - 100;
+        const cy = horizon * (0.15 + (c % 3) * 0.18);
+        const cw = 50 + (c * 37 % 60);
+        const ch = 12 + (c * 13 % 10);
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, cw, ch, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(cx - cw * 0.4, cy + 3, cw * 0.6, ch * 0.8, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(cx + cw * 0.35, cy + 2, cw * 0.5, ch * 0.7, 0, 0, Math.PI * 2);
+        ctx.fill();
       }
 
-      // Hills silhouette
-      ctx.fillStyle = "#0f1f15";
+      // Distant hills/grandstands silhouette
+      ctx.fillStyle = "#5a7a5a";
       ctx.beginPath();
-      ctx.moveTo(0, horizon + 5);
-      for (let x = 0; x <= W; x += 10) {
-        ctx.lineTo(x, horizon + 5 - Math.sin(x * 0.004 + g.position * 0.001) * 12 - 5);
+      ctx.moveTo(0, horizon + 2);
+      for (let x = 0; x <= W; x += 8) {
+        const h1 = Math.sin(x * 0.003 + 1.2) * 15;
+        const h2 = Math.sin(x * 0.007 + 0.5) * 8;
+        ctx.lineTo(x, horizon - 5 - h1 - h2);
       }
-      ctx.lineTo(W, viewHeight);
-      ctx.lineTo(0, viewHeight);
+      ctx.lineTo(W, horizon + 2);
       ctx.fill();
+
+      // Grandstand blocks (distant)
+      ctx.fillStyle = "#7a8a7a";
+      const gsX1 = W * 0.15 - (cloudDrift * 0.3 % 40);
+      ctx.fillRect(gsX1, horizon - 22, 60, 18);
+      ctx.fillRect(gsX1 + 70, horizon - 18, 40, 14);
+      ctx.fillStyle = "#8a9a8a";
+      ctx.fillRect(W * 0.7 + (cloudDrift * 0.2 % 30), horizon - 20, 80, 16);
+
+      // Green grass horizon strip
+      ctx.fillStyle = "#3a8a3a";
+      ctx.fillRect(0, horizon - 2, W, 12);
 
       // ─── DRAW ROAD (back to front) ───
       for (let i = projected.length - 1; i > 0; i--) {
@@ -568,12 +587,31 @@ export default function App() {
         // y1 = far (top, near horizon), y2 = near (bottom, near camera)
         const stripH = y2 - y1;
 
-        // Grass
-        ctx.fillStyle = alt ? "#0c4512" : "#07380c";
+        // ── GRASS (bright green, alternating for speed feel) ──
+        ctx.fillStyle = alt ? "#2d8a2d" : "#258a25";
         ctx.fillRect(0, y1, W, stripH + 1);
 
-        // Road surface (trapezoid: far edge at top, near edge at bottom)
-        ctx.fillStyle = alt ? "#38383c" : "#2e2e32";
+        // ── GRAVEL TRAP (between grass and kerb) ──
+        const gravelFar = far.w * 0.08;
+        const gravelNear = near.w * 0.08;
+        ctx.fillStyle = alt ? "#c4a86a" : "#b89a5e";
+        // Left gravel
+        ctx.beginPath();
+        ctx.moveTo(far.x - far.w / 2 - gravelFar * 2.5, y1);
+        ctx.lineTo(far.x - far.w / 2 - gravelFar * 0.3, y1);
+        ctx.lineTo(near.x - near.w / 2 - gravelNear * 0.3, y2);
+        ctx.lineTo(near.x - near.w / 2 - gravelNear * 2.5, y2);
+        ctx.fill();
+        // Right gravel
+        ctx.beginPath();
+        ctx.moveTo(far.x + far.w / 2 + gravelFar * 0.3, y1);
+        ctx.lineTo(far.x + far.w / 2 + gravelFar * 2.5, y1);
+        ctx.lineTo(near.x + near.w / 2 + gravelNear * 2.5, y2);
+        ctx.lineTo(near.x + near.w / 2 + gravelNear * 0.3, y2);
+        ctx.fill();
+
+        // ── ROAD SURFACE (darker, realistic tarmac) ──
+        ctx.fillStyle = alt ? "#484850" : "#404048";
         ctx.beginPath();
         ctx.moveTo(far.x - far.w / 2, y1);
         ctx.lineTo(far.x + far.w / 2, y1);
@@ -581,10 +619,12 @@ export default function App() {
         ctx.lineTo(near.x - near.w / 2, y2);
         ctx.fill();
 
-        // Kerbs (red/white alternating)
-        const kNear = near.w * 0.04;
-        const kFar = far.w * 0.04;
-        ctx.fillStyle = alt ? "#cc1111" : "#ddd";
+        // ── THICK KERBS (red/white sausage style) ──
+        const kFar = far.w * 0.06;   // much wider kerbs
+        const kNear = near.w * 0.06;
+        // Kerb base colour (alternating red/white like real F1 kerbs)
+        const kerbAlt = Math.floor(far.segmentIndex / 2) % 2;
+        ctx.fillStyle = kerbAlt ? "#DC0000" : "#ffffff";
         // Left kerb
         ctx.beginPath();
         ctx.moveTo(far.x - far.w / 2 - kFar, y1);
@@ -599,18 +639,33 @@ export default function App() {
         ctx.lineTo(near.x + near.w / 2 + kNear, y2);
         ctx.lineTo(near.x + near.w / 2, y2);
         ctx.fill();
+        // Kerb raised edge highlight (gives 3D raised look)
+        ctx.fillStyle = kerbAlt ? "#ff3333" : "#e8e8e8";
+        const keH = Math.max(1, stripH * 0.3);
+        // Left raised edge
+        ctx.beginPath();
+        ctx.moveTo(far.x - far.w / 2 - kFar, y1);
+        ctx.lineTo(far.x - far.w / 2, y1);
+        ctx.lineTo(near.x - near.w / 2, y1 + keH);
+        ctx.lineTo(near.x - near.w / 2 - kNear, y1 + keH);
+        ctx.fill();
+        // Right raised edge
+        ctx.beginPath();
+        ctx.moveTo(far.x + far.w / 2, y1);
+        ctx.lineTo(far.x + far.w / 2 + kFar, y1);
+        ctx.lineTo(near.x + near.w / 2 + kNear, y1 + keH);
+        ctx.lineTo(near.x + near.w / 2, y1 + keH);
+        ctx.fill();
 
-        // White edge lines
-        ctx.fillStyle = "rgba(255,255,255,0.4)";
-        const edgeW = Math.max(1, near.w * 0.003);
-        // Left edge
+        // ── WHITE EDGE LINES (thick like real track) ──
+        ctx.fillStyle = "rgba(255,255,255,0.7)";
+        const edgeW = Math.max(1, near.w * 0.006);
         ctx.beginPath();
         ctx.moveTo(far.x - far.w / 2, y1);
         ctx.lineTo(far.x - far.w / 2 + edgeW, y1);
         ctx.lineTo(near.x - near.w / 2 + edgeW, y2);
         ctx.lineTo(near.x - near.w / 2, y2);
         ctx.fill();
-        // Right edge
         ctx.beginPath();
         ctx.moveTo(far.x + far.w / 2 - edgeW, y1);
         ctx.lineTo(far.x + far.w / 2, y1);
@@ -618,41 +673,53 @@ export default function App() {
         ctx.lineTo(near.x + near.w / 2 - edgeW, y2);
         ctx.fill();
 
-        // Center dashes
-        if (alt) {
-          ctx.fillStyle = "rgba(255,255,255,0.12)";
-          const centerX = (near.x + far.x) / 2;
-          ctx.fillRect(centerX - 1, y1, 2, stripH);
+        // ── TRACKSIDE BARRIERS (dark wall beyond gravel) ──
+        if (far.w > 6) {
+          const barrierH = Math.max(1, far.w * 0.015);
+          const barrierFarL = far.x - far.w / 2 - gravelFar * 2.8;
+          const barrierFarR = far.x + far.w / 2 + gravelFar * 2.8;
+          const barrierNearL = near.x - near.w / 2 - gravelNear * 2.8;
+          const barrierNearR = near.x + near.w / 2 + gravelNear * 2.8;
+          // Left barrier
+          ctx.fillStyle = alt ? "#556" : "#667";
+          ctx.beginPath();
+          ctx.moveTo(barrierFarL, y1 - barrierH);
+          ctx.lineTo(barrierFarL + far.w * 0.01, y1 - barrierH);
+          ctx.lineTo(barrierNearL + near.w * 0.01, y2);
+          ctx.lineTo(barrierNearL, y2);
+          ctx.fill();
+          // Right barrier
+          ctx.beginPath();
+          ctx.moveTo(barrierFarR - far.w * 0.01, y1 - barrierH);
+          ctx.lineTo(barrierFarR, y1 - barrierH);
+          ctx.lineTo(barrierNearR, y2);
+          ctx.lineTo(barrierNearR - near.w * 0.01, y2);
+          ctx.fill();
         }
 
-        // ── Roadside trees (every 9 segments) ──
-        if (far.segmentIndex % 9 === 0 && far.w > 8) {
-          const side = (far.segmentIndex % 18 < 9) ? -1 : 1;
-          const treeX = far.x + side * (far.w / 2 + far.w * 0.12);
-          const treeH = far.w * 0.08;
-          const trunkW = far.w * 0.025;
-          if (treeH > 3) {
-            ctx.fillStyle = "#2a1a08";
-            ctx.fillRect(treeX - trunkW * 0.3, far.y - treeH, trunkW * 0.6, treeH);
-            ctx.fillStyle = "#0a3a0a";
-            ctx.beginPath();
-            ctx.arc(treeX, far.y - treeH, trunkW * 1.3, 0, Math.PI * 2);
-            ctx.fill();
-          }
+        // ── Catch fence posts (every 8 segments) ──
+        if (far.segmentIndex % 8 === 0 && far.w > 10) {
+          const postH = far.w * 0.025;
+          const postW = Math.max(1, far.w * 0.003);
+          const postFL = far.x - far.w / 2 - gravelFar * 2.8;
+          const postFR = far.x + far.w / 2 + gravelFar * 2.8;
+          ctx.fillStyle = "#888";
+          ctx.fillRect(postFL - postW / 2, y1 - postH, postW, postH);
+          ctx.fillRect(postFR - postW / 2, y1 - postH, postW, postH);
         }
 
-        // ── Distance boards (every 22 segments) ──
-        if (far.segmentIndex % 22 === 11 && far.w > 12) {
-          const side = (far.segmentIndex % 44 < 22) ? -1 : 1;
-          const signX = far.x + side * (far.w / 2 + far.w * 0.1);
-          const signH = far.w * 0.035;
+        // ── Distance boards (every 25 segments) ──
+        if (far.segmentIndex % 25 === 12 && far.w > 14) {
+          const side = (far.segmentIndex % 50 < 25) ? -1 : 1;
+          const signX = far.x + side * (far.w / 2 + gravelFar * 3.5);
+          const signH = far.w * 0.04;
           ctx.fillStyle = "#185a28";
-          ctx.fillRect(signX - signH, far.y - signH * 1.2, signH * 2, signH * 0.8);
-          if (signH > 6) {
+          ctx.fillRect(signX - signH * 1.2, y1 - signH * 1.5, signH * 2.4, signH);
+          if (signH > 5) {
             ctx.fillStyle = "#fff";
-            ctx.font = `${Math.max(5, Math.floor(signH * 0.3))}px monospace`;
+            ctx.font = `bold ${Math.max(5, Math.floor(signH * 0.5))}px monospace`;
             ctx.textAlign = "center";
-            ctx.fillText("100", signX, far.y - signH * 0.6);
+            ctx.fillText("100", signX, y1 - signH * 0.8);
           }
         }
 
@@ -763,84 +830,195 @@ export default function App() {
         );
       }
 
-      // ─── DASHBOARD ───
-      const dashY = viewHeight;
+      // ─── COCKPIT OVERLAY (F1 onboard view) ───
+      const cockpitY = viewHeight * 0.55; // where the cockpit starts
+      const noseW = W * 0.18;             // nose cone width
+      const noseH = H - cockpitY;         // nose extends to bottom
+
+      // ── Nose cone (center body) ──
+      const noseGrad = ctx.createLinearGradient(W / 2 - noseW / 2, 0, W / 2 + noseW / 2, 0);
+      noseGrad.addColorStop(0, "#1a1a2a");
+      noseGrad.addColorStop(0.3, "#2a2a3a");
+      noseGrad.addColorStop(0.5, "#333344");
+      noseGrad.addColorStop(0.7, "#2a2a3a");
+      noseGrad.addColorStop(1, "#1a1a2a");
+      ctx.fillStyle = noseGrad;
+      // Tapered nose shape
+      ctx.beginPath();
+      ctx.moveTo(W / 2 - noseW * 0.15, cockpitY);       // narrow top
+      ctx.lineTo(W / 2 + noseW * 0.15, cockpitY);
+      ctx.lineTo(W / 2 + noseW * 0.55, H * 0.78);       // widens
+      ctx.lineTo(W / 2 + noseW * 0.7, H);                // wide at bottom
+      ctx.lineTo(W / 2 - noseW * 0.7, H);
+      ctx.lineTo(W / 2 - noseW * 0.55, H * 0.78);
+      ctx.fill();
+
+      // Nose center line
+      ctx.strokeStyle = "rgba(255,255,255,0.08)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(W / 2, cockpitY + 10);
+      ctx.lineTo(W / 2, H);
+      ctx.stroke();
+
+      // ── Front wheels (visible at sides) ──
+      const wheelW = W * 0.08;
+      const wheelH = H * 0.18;
+      const wheelY = H * 0.58;
+      // Left wheel
+      ctx.fillStyle = "#111";
+      ctx.beginPath();
+      ctx.ellipse(W * 0.18, wheelY, wheelW, wheelH, -0.15, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#1a1a1a";
+      ctx.beginPath();
+      ctx.ellipse(W * 0.18, wheelY, wheelW * 0.85, wheelH * 0.85, -0.15, 0, Math.PI * 2);
+      ctx.fill();
+      // Wheel grooves
+      ctx.strokeStyle = "#222";
+      ctx.lineWidth = 1;
+      for (let wg = 0; wg < 4; wg++) {
+        ctx.beginPath();
+        ctx.ellipse(W * 0.18, wheelY, wheelW * (0.3 + wg * 0.15), wheelH * (0.3 + wg * 0.15), -0.15, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      // Right wheel
+      ctx.fillStyle = "#111";
+      ctx.beginPath();
+      ctx.ellipse(W * 0.82, wheelY, wheelW, wheelH, 0.15, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#1a1a1a";
+      ctx.beginPath();
+      ctx.ellipse(W * 0.82, wheelY, wheelW * 0.85, wheelH * 0.85, 0.15, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#222";
+      for (let wg = 0; wg < 4; wg++) {
+        ctx.beginPath();
+        ctx.ellipse(W * 0.82, wheelY, wheelW * (0.3 + wg * 0.15), wheelH * (0.3 + wg * 0.15), 0.15, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // ── Suspension arms (connecting wheels to nose) ──
+      ctx.strokeStyle = "#2a2a35";
+      ctx.lineWidth = Math.max(2, W * 0.003);
+      // Left upper
+      ctx.beginPath();
+      ctx.moveTo(W / 2 - noseW * 0.2, cockpitY + noseH * 0.25);
+      ctx.lineTo(W * 0.22, wheelY - wheelH * 0.3);
+      ctx.stroke();
+      // Left lower
+      ctx.beginPath();
+      ctx.moveTo(W / 2 - noseW * 0.25, cockpitY + noseH * 0.4);
+      ctx.lineTo(W * 0.22, wheelY + wheelH * 0.1);
+      ctx.stroke();
+      // Right upper
+      ctx.beginPath();
+      ctx.moveTo(W / 2 + noseW * 0.2, cockpitY + noseH * 0.25);
+      ctx.lineTo(W * 0.78, wheelY - wheelH * 0.3);
+      ctx.stroke();
+      // Right lower
+      ctx.beginPath();
+      ctx.moveTo(W / 2 + noseW * 0.25, cockpitY + noseH * 0.4);
+      ctx.lineTo(W * 0.78, wheelY + wheelH * 0.1);
+      ctx.stroke();
+
+      // ── Halo (titanium arch over driver) ──
+      ctx.strokeStyle = "#555";
+      ctx.lineWidth = Math.max(4, W * 0.006);
+      ctx.beginPath();
+      ctx.moveTo(W * 0.38, H * 0.88);
+      ctx.quadraticCurveTo(W * 0.42, cockpitY - 15, W / 2, cockpitY - 20);
+      ctx.quadraticCurveTo(W * 0.58, cockpitY - 15, W * 0.62, H * 0.88);
+      ctx.stroke();
+      // Halo center pillar
+      ctx.lineWidth = Math.max(3, W * 0.004);
+      ctx.beginPath();
+      ctx.moveTo(W / 2, cockpitY - 20);
+      ctx.lineTo(W / 2, cockpitY + 5);
+      ctx.stroke();
+
+      // ── Side mirrors ──
+      const mirrorW = W * 0.04;
+      const mirrorH = H * 0.025;
+      const mirrorY = cockpitY + 30;
+      // Left mirror housing
+      ctx.fillStyle = "#1a1a2a";
+      ctx.fillRect(W * 0.28 - mirrorW, mirrorY, mirrorW, mirrorH);
+      ctx.fillStyle = "#304060";
+      ctx.fillRect(W * 0.28 - mirrorW + 2, mirrorY + 2, mirrorW - 4, mirrorH - 4);
+      // Right mirror housing
+      ctx.fillStyle = "#1a1a2a";
+      ctx.fillRect(W * 0.72, mirrorY, mirrorW, mirrorH);
+      ctx.fillStyle = "#304060";
+      ctx.fillRect(W * 0.72 + 2, mirrorY + 2, mirrorW - 4, mirrorH - 4);
+      // Show passed cars in mirrors
+      g.aiCars.forEach(car => {
+        if (car.segmentsAhead < 2) {
+          const mx = car.lane < 0 ? W * 0.28 - mirrorW + 4 : W * 0.72 + 4;
+          ctx.fillStyle = car.color;
+          ctx.fillRect(mx, mirrorY + 4, 5, 3);
+        }
+      });
+
+      // ── Dashboard/steering wheel area (bottom strip) ──
+      const dashY = H * 0.88;
       const dashGrad = ctx.createLinearGradient(0, dashY, 0, H);
-      dashGrad.addColorStop(0, "#1c1c1c");
-      dashGrad.addColorStop(0.3, "#131313");
-      dashGrad.addColorStop(1, "#080808");
+      dashGrad.addColorStop(0, "rgba(20,20,30,0.8)");
+      dashGrad.addColorStop(1, "#0a0a10");
       ctx.fillStyle = dashGrad;
-      ctx.fillRect(0, dashY, W, dashboardHeight);
-      ctx.fillStyle = "rgba(220,0,0,0.35)";
-      ctx.fillRect(0, dashY, W, 2);
+      ctx.fillRect(W * 0.3, dashY, W * 0.4, H - dashY);
 
-      // Steering wheel silhouette
-      ctx.fillStyle = "#0c0c0c";
+      // Steering wheel (rounded rectangle)
+      ctx.fillStyle = "#111118";
       ctx.beginPath();
-      ctx.ellipse(W / 2, H + dashboardHeight * 0.3, W * 0.08, dashboardHeight * 1.1, 0, Math.PI * 1.15, Math.PI * 1.85);
+      ctx.ellipse(W / 2, H + H * 0.02, W * 0.12, H * 0.08, 0, Math.PI * 1.1, Math.PI * 1.9);
       ctx.fill();
-      ctx.fillStyle = "#151515";
+      ctx.fillStyle = "#18181f";
       ctx.beginPath();
-      ctx.ellipse(W / 2, H + dashboardHeight * 0.3, W * 0.06, dashboardHeight * 0.8, 0, Math.PI * 1.18, Math.PI * 1.82);
+      ctx.ellipse(W / 2, H + H * 0.02, W * 0.09, H * 0.06, 0, Math.PI * 1.15, Math.PI * 1.85);
       ctx.fill();
 
-      // RPM LED strip
-      const rpmFraction = Math.min(1, g.speed / 2);
+      // RPM LED strip (on steering wheel)
+      const rpmFraction = Math.min(1, g.speed / 2.5);
       const ledCount = 15;
       const ledW = Math.min(8, W * 0.008);
-      const ledGap = ledW * 1.4;
+      const ledGap = ledW * 1.6;
       const ledStartX = W / 2 - (ledCount * ledGap) / 2;
       for (let l = 0; l < ledCount; l++) {
         const isLit = l / ledCount < rpmFraction;
         if (l < 5) ctx.fillStyle = isLit ? "#0d0" : "#091a09";
         else if (l < 10) ctx.fillStyle = isLit ? "#dd0" : "#1a1a09";
         else ctx.fillStyle = isLit ? "#d00" : "#1a0909";
-        ctx.fillRect(ledStartX + l * ledGap, dashY + 5, ledW, ledW * 0.45);
+        ctx.fillRect(ledStartX + l * ledGap, dashY + 4, ledW, ledW * 0.5);
       }
 
       // Speed readout
       const kph = Math.floor(g.speed * 180 + 80);
-      ctx.font = `bold ${Math.max(13, Math.floor(H * 0.024))}px monospace`;
+      ctx.font = `bold ${Math.max(14, Math.floor(H * 0.026))}px monospace`;
       ctx.fillStyle = g.boostTimer > 0 ? "#0f8" : "#fff";
       ctx.textAlign = "center";
-      ctx.fillText(kph.toString(), W * 0.84, dashY + dashboardHeight * 0.52);
-      ctx.font = `${Math.max(5, Math.floor(H * 0.007))}px monospace`;
-      ctx.fillStyle = "rgba(255,255,255,0.2)";
-      ctx.fillText("KPH", W * 0.84, dashY + dashboardHeight * 0.66);
+      ctx.fillText(kph.toString(), W * 0.6, dashY + 18);
+      ctx.font = `${Math.max(6, Math.floor(H * 0.008))}px monospace`;
+      ctx.fillStyle = "rgba(255,255,255,0.25)";
+      ctx.fillText("KPH", W * 0.6, dashY + 26);
 
-      // Gear readout
+      // Gear readout (big, center)
       const gear = g.speed < 0.3 ? 2 : g.speed < 0.6 ? 4 : g.speed < 1.0 ? 6 : g.speed < 1.6 ? 7 : 8;
-      ctx.font = `bold ${Math.max(14, Math.floor(H * 0.028))}px monospace`;
+      ctx.font = `bold ${Math.max(18, Math.floor(H * 0.035))}px monospace`;
       ctx.fillStyle = "#fff";
       ctx.textAlign = "center";
-      ctx.fillText(gear.toString(), W * 0.16, dashY + dashboardHeight * 0.52);
-      ctx.font = `${Math.max(5, Math.floor(H * 0.007))}px monospace`;
-      ctx.fillStyle = "rgba(255,255,255,0.2)";
-      ctx.fillText("GEAR", W * 0.16, dashY + dashboardHeight * 0.66);
+      ctx.fillText(gear.toString(), W * 0.4, dashY + 20);
+      ctx.font = `${Math.max(6, Math.floor(H * 0.008))}px monospace`;
+      ctx.fillStyle = "rgba(255,255,255,0.25)";
+      ctx.fillText("GEAR", W * 0.4, dashY + 28);
 
-      // DRS indicator (flashing)
+      // DRS indicator
       if (g.boostTimer > 0 && g.boostTimer % 14 < 8) {
-        ctx.font = `bold ${Math.max(8, Math.floor(H * 0.012))}px monospace`;
+        ctx.font = `bold ${Math.max(10, Math.floor(H * 0.014))}px monospace`;
         ctx.fillStyle = "#0f8";
         ctx.textAlign = "center";
-        ctx.fillText("DRS", W / 2, dashY + dashboardHeight * 0.46);
+        ctx.fillText("DRS", W / 2, dashY + 18);
       }
-
-      // Side mirrors
-      ctx.fillStyle = "#0a0a0a";
-      ctx.fillRect(0, dashY - 12, W * 0.045, 10);
-      ctx.fillRect(W * 0.955, dashY - 12, W * 0.045, 10);
-      ctx.fillStyle = "#152030";
-      ctx.fillRect(1, dashY - 10, W * 0.042, 7);
-      ctx.fillRect(W * 0.957, dashY - 10, W * 0.042, 7);
-      // Show passed cars in mirrors
-      g.aiCars.forEach(car => {
-        if (car.segmentsAhead < 2) {
-          const mirrorX = car.lane < 0 ? W * 0.015 : W * 0.968;
-          ctx.fillStyle = car.color;
-          ctx.fillRect(mirrorX, dashY - 9, 3, 2);
-        }
-      });
 
       if (g.shakeTimer > 0) ctx.restore();
 
