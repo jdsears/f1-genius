@@ -318,6 +318,7 @@ export default function App() {
     totalProgress: 0,      // overall race completion 0→1
     aiCars: [],            // AI competitor data
     startScreenPos: 0,     // position for start screen background animation
+    bgOffset: 0,           // accumulated background pan from curves (world rotation feel)
   }).current;
 
   // Initialize sound engine
@@ -348,7 +349,7 @@ export default function App() {
       position: 0, speed: 0, targetSpeed: 0,
       playerLane: 0, playerLaneTarget: 0,
       raceFrames: 0, questionsAsked: 0,
-      boostTimer: 0, shakeTimer: 0, totalProgress: 0,
+      boostTimer: 0, shakeTimer: 0, totalProgress: 0, bgOffset: 0,
     });
     game.segments = buildTrackSegments();
 
@@ -518,6 +519,9 @@ export default function App() {
       // ─── START SCREEN ANIMATION ───
       if (gameState === GS.START) {
         g.startScreenPos += 0.6;
+        // Update background pan on start screen too
+        const startSeg = g.segments[Math.floor(g.startScreenPos) % g.segments.length];
+        if (startSeg) g.bgOffset -= startSeg.curve * 0.6 * 0.4;
       }
 
       // ─── PHYSICS UPDATE ───
@@ -549,6 +553,11 @@ export default function App() {
         // Advance position
         g.position += g.speed;
         g.totalProgress += g.speed * 0.0001;
+
+        // Update background pan — accumulate based on current curve and speed
+        // When turning right (positive curve), background pans left (negative)
+        const curveVal = curSeg ? curSeg.curve : 0;
+        g.bgOffset -= curveVal * g.speed * 0.4;
 
         // Update engine sound
         if (soundRef.current) soundRef.current.updateEngine(g.speed);
@@ -664,6 +673,13 @@ export default function App() {
         });
       }
 
+      // ─── BACKGROUND PARALLAX ───
+      // bgOffset accumulates with curves — creates the feel of turning
+      // Different layers move at different speeds (parallax depth)
+      const bgPan = g.bgOffset * 0.008;          // clouds (far, slow)
+      const hillPan = g.bgOffset * 0.025;         // hills (medium)
+      const nearPan = g.bgOffset * 0.05;          // grandstands (near, fast)
+
       // ─── DRAW SKY (daytime) ───
       const skyGrad = ctx.createLinearGradient(0, 0, 0, horizon);
       skyGrad.addColorStop(0, "#4a90d9");
@@ -673,11 +689,11 @@ export default function App() {
       ctx.fillStyle = skyGrad;
       ctx.fillRect(0, 0, W, horizon + 10);
 
-      // Clouds (fixed positions, slowly drifting)
+      // Clouds (parallax — pan with curves, drift with movement)
       ctx.fillStyle = "rgba(255,255,255,0.6)";
       const cloudDrift = (effectivePos * 0.02) % W;
       for (let c = 0; c < 6; c++) {
-        const cx = ((c * 217 + 50 - cloudDrift) % (W + 200)) - 100;
+        const cx = ((c * 217 + 50 - cloudDrift + bgPan) % (W + 200)) - 100;
         const cy = horizon * (0.15 + (c % 3) * 0.18);
         const cw = 50 + (c * 37 % 60);
         const ch = 12 + (c * 13 % 10);
@@ -692,25 +708,26 @@ export default function App() {
         ctx.fill();
       }
 
-      // Distant hills/grandstands silhouette
+      // Distant hills silhouette (parallax — shifts with curves)
       ctx.fillStyle = "#5a7a5a";
       ctx.beginPath();
       ctx.moveTo(0, horizon + 2);
       for (let x = 0; x <= W; x += 8) {
-        const h1 = Math.sin(x * 0.003 + 1.2) * 15;
-        const h2 = Math.sin(x * 0.007 + 0.5) * 8;
+        const worldX = x - hillPan;
+        const h1 = Math.sin(worldX * 0.003 + 1.2) * 15;
+        const h2 = Math.sin(worldX * 0.007 + 0.5) * 8;
         ctx.lineTo(x, horizon - 5 - h1 - h2);
       }
       ctx.lineTo(W, horizon + 2);
       ctx.fill();
 
-      // Grandstand blocks (distant)
+      // Grandstand blocks (parallax — nearest layer, moves most)
       ctx.fillStyle = "#7a8a7a";
-      const gsX1 = W * 0.15 - (cloudDrift * 0.3 % 40);
+      const gsX1 = W * 0.15 - (cloudDrift * 0.3 % 40) + nearPan;
       ctx.fillRect(gsX1, horizon - 22, 60, 18);
       ctx.fillRect(gsX1 + 70, horizon - 18, 40, 14);
       ctx.fillStyle = "#8a9a8a";
-      ctx.fillRect(W * 0.7 + (cloudDrift * 0.2 % 30), horizon - 20, 80, 16);
+      ctx.fillRect(W * 0.7 + (cloudDrift * 0.2 % 30) + nearPan, horizon - 20, 80, 16);
 
       // Green grass horizon strip
       ctx.fillStyle = "#3a8a3a";
