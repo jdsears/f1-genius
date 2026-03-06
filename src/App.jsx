@@ -31,10 +31,10 @@ function buildTrackSegments() {
   return segments;
 }
 
-/** Calculate finishing position: 0 wrong = P1, 1 wrong = P2, etc. */
+/** Calculate position: start P10, each correct answer gains 1 place.
+ *  10 correct = P1, 9 correct = P2, etc. */
 function calcPosition(correctCount, totalAnswered) {
-  if (totalAnswered === 0) return 6;
-  return Math.min(1 + (totalAnswered - correctCount), 6);
+  return Math.max(1, 10 - correctCount);
 }
 
 /** Format position: 1 → "1ST", 2 → "2ND", etc. */
@@ -297,8 +297,8 @@ export default function App() {
   const [selectedAnswer, setSelectedAnswer] = useState(null);
   const [correctCount, setCorrectCount] = useState(0);
   const [showFact, setShowFact] = useState(false);
-  const [position, setPosition] = useState(6);
-  const [finalPosition, setFinalPosition] = useState(6);
+  const [position, setPosition] = useState(10);
+  const [finalPosition, setFinalPosition] = useState(10);
   const [cornerName, setCornerName] = useState("");
   const [raceProgress, setRaceProgress] = useState(0);
 
@@ -339,8 +339,8 @@ export default function App() {
     setCorrectCount(0);
     setSelectedAnswer(null);
     setShowFact(false);
-    setPosition(6);
-    setFinalPosition(6);
+    setPosition(10);
+    setFinalPosition(10);
     setRaceProgress(0);
     setCornerName("PIT LANE");
 
@@ -353,12 +353,12 @@ export default function App() {
     });
     game.segments = buildTrackSegments();
 
-    // Initialize AI cars — tight pack, all visible ahead at start (P6)
+    // Initialize AI cars — all 9 ahead at start (P10)
     game.aiCars = AI_CARS.map((car, i) => ({
       ...car,
       rank: i + 1,
-      segmentsAhead: 3 + i * 3.5,              // tight pack: 3, 6.5, 10, 13.5, 17
-      targetSegAhead: 3 + i * 3.5,
+      segmentsAhead: 4 + i * 3,                // spread: 4, 7, 10, 13, ..., 28
+      targetSegAhead: 4 + i * 3,
       lane: ((i % 2) * 2 - 1) * 0.3,           // alternating left/right
       targetLane: ((i % 2) * 2 - 1) * 0.3,
       bobPhase: Math.random() * Math.PI * 2,
@@ -592,7 +592,7 @@ export default function App() {
             } else {
               car.targetSegAhead = -2 - (car.rank - playerRank) * 3;
             }
-            car.targetSegAhead = Math.min(car.targetSegAhead, 30);
+            car.targetSegAhead = Math.min(car.targetSegAhead, 50);
           }
 
           // Lerp toward target — faster during overtakes
@@ -676,9 +676,12 @@ export default function App() {
       // ─── BACKGROUND PARALLAX ───
       // bgOffset accumulates with curves — creates the feel of turning
       // Different layers move at different speeds (parallax depth)
-      const bgPan = g.bgOffset * 0.008;          // clouds (far, slow)
-      const hillPan = g.bgOffset * 0.025;         // hills (medium)
-      const nearPan = g.bgOffset * 0.05;          // grandstands (near, fast)
+      const cloudPan = g.bgOffset * 0.03;          // clouds (far, slow)
+      const hillPan = g.bgOffset * 0.08;            // far hills (medium)
+      const nearHillPan = g.bgOffset * 0.14;        // near hills
+      const treePan = g.bgOffset * 0.2;             // trees/structures
+      const nearPan = g.bgOffset * 0.3;             // grandstands (near, fast)
+      const cloudDrift = (effectivePos * 0.02) % W;
 
       // ─── DRAW SKY (daytime) ───
       const skyGrad = ctx.createLinearGradient(0, 0, 0, horizon);
@@ -689,14 +692,15 @@ export default function App() {
       ctx.fillStyle = skyGrad;
       ctx.fillRect(0, 0, W, horizon + 10);
 
-      // Clouds (parallax — pan with curves, drift with movement)
-      ctx.fillStyle = "rgba(255,255,255,0.6)";
-      const cloudDrift = (effectivePos * 0.02) % W;
-      for (let c = 0; c < 6; c++) {
-        const cx = ((c * 217 + 50 - cloudDrift + bgPan) % (W + 200)) - 100;
-        const cy = horizon * (0.15 + (c % 3) * 0.18);
-        const cw = 50 + (c * 37 % 60);
-        const ch = 12 + (c * 13 % 10);
+      // ─── CLOUDS (12 clouds, parallax + drift) ───
+      ctx.fillStyle = "rgba(255,255,255,0.55)";
+      const totalCloudSpan = W * 3; // clouds spread over 3x screen width for wrapping
+      for (let c = 0; c < 12; c++) {
+        const baseX = (c / 12) * totalCloudSpan;
+        const cx = ((baseX - cloudDrift * 0.8 + cloudPan) % totalCloudSpan + totalCloudSpan) % totalCloudSpan - W * 0.5;
+        const cy = horizon * (0.08 + ((c * 7) % 5) * 0.1);
+        const cw = 40 + (c * 37 % 70);
+        const ch = 10 + (c * 13 % 12);
         ctx.beginPath();
         ctx.ellipse(cx, cy, cw, ch, 0, 0, Math.PI * 2);
         ctx.fill();
@@ -708,26 +712,116 @@ export default function App() {
         ctx.fill();
       }
 
-      // Distant hills silhouette (parallax — shifts with curves)
-      ctx.fillStyle = "#5a7a5a";
+      // ─── FAR HILLS (distant, blue-grey) ───
+      ctx.fillStyle = "#6a8aaa";
       ctx.beginPath();
       ctx.moveTo(0, horizon + 2);
-      for (let x = 0; x <= W; x += 8) {
+      for (let x = 0; x <= W; x += 6) {
         const worldX = x - hillPan;
-        const h1 = Math.sin(worldX * 0.003 + 1.2) * 15;
-        const h2 = Math.sin(worldX * 0.007 + 0.5) * 8;
-        ctx.lineTo(x, horizon - 5 - h1 - h2);
+        const h1 = Math.sin(worldX * 0.002 + 0.8) * 25;
+        const h2 = Math.sin(worldX * 0.005 + 2.1) * 12;
+        const h3 = Math.sin(worldX * 0.0015 + 4.0) * 18;
+        ctx.lineTo(x, horizon - 18 - h1 - h2 - h3);
       }
       ctx.lineTo(W, horizon + 2);
       ctx.fill();
 
-      // Grandstand blocks (parallax — nearest layer, moves most)
-      ctx.fillStyle = "#7a8a7a";
-      const gsX1 = W * 0.15 - (cloudDrift * 0.3 % 40) + nearPan;
-      ctx.fillRect(gsX1, horizon - 22, 60, 18);
-      ctx.fillRect(gsX1 + 70, horizon - 18, 40, 14);
-      ctx.fillStyle = "#8a9a8a";
-      ctx.fillRect(W * 0.7 + (cloudDrift * 0.2 % 30) + nearPan, horizon - 20, 80, 16);
+      // ─── NEAR HILLS (green, more detail) ───
+      ctx.fillStyle = "#5a7a5a";
+      ctx.beginPath();
+      ctx.moveTo(0, horizon + 2);
+      for (let x = 0; x <= W; x += 4) {
+        const worldX = x - nearHillPan;
+        const h1 = Math.sin(worldX * 0.004 + 1.2) * 18;
+        const h2 = Math.sin(worldX * 0.009 + 0.5) * 10;
+        const h3 = Math.sin(worldX * 0.015 + 3.0) * 5;
+        ctx.lineTo(x, horizon - 6 - h1 - h2 - h3);
+      }
+      ctx.lineTo(W, horizon + 2);
+      ctx.fill();
+
+      // ─── HORIZON STRUCTURES (grandstands, towers, trees — wrap around) ───
+      const structSpan = W * 4; // structures spread over 4x screen for wrapping
+
+      // Grandstands (8 of them, various sizes)
+      const grandstands = [
+        { offset: 0, w: 90, h: 28, color: "#6a7a6a", roofColor: "#555" },
+        { offset: 0.12, w: 60, h: 20, color: "#7a8a7a", roofColor: "#666" },
+        { offset: 0.25, w: 110, h: 32, color: "#6a7a6a", roofColor: "#555" },
+        { offset: 0.35, w: 50, h: 18, color: "#8a9a8a", roofColor: "#777" },
+        { offset: 0.48, w: 80, h: 26, color: "#6a7a6a", roofColor: "#555" },
+        { offset: 0.6, w: 70, h: 22, color: "#7a8a7a", roofColor: "#666" },
+        { offset: 0.73, w: 100, h: 30, color: "#6a7a6a", roofColor: "#555" },
+        { offset: 0.88, w: 55, h: 19, color: "#8a9a8a", roofColor: "#777" },
+      ];
+      grandstands.forEach(gs => {
+        const baseX = gs.offset * structSpan;
+        const gx = ((baseX + nearPan) % structSpan + structSpan) % structSpan - W * 0.5;
+        if (gx > -gs.w && gx < W + gs.w) {
+          const gy = horizon - gs.h + 4;
+          // Main structure
+          ctx.fillStyle = gs.color;
+          ctx.fillRect(gx, gy, gs.w, gs.h);
+          // Roof overhang
+          ctx.fillStyle = gs.roofColor;
+          ctx.fillRect(gx - 4, gy - 4, gs.w + 8, 5);
+          // Rows of seats (horizontal lines)
+          ctx.fillStyle = "rgba(0,0,0,0.15)";
+          for (let r = 0; r < 4; r++) {
+            ctx.fillRect(gx + 2, gy + 4 + r * (gs.h / 5), gs.w - 4, 1);
+          }
+          // Tiny colored dots for crowd
+          for (let s = 0; s < gs.w / 5; s++) {
+            const crowdColors = ["#e33", "#33e", "#ee3", "#fff", "#f80"];
+            ctx.fillStyle = crowdColors[(s * 3 + Math.floor(gs.offset * 17)) % crowdColors.length];
+            ctx.fillRect(gx + 4 + s * 5, gy + 5 + (s % 3) * (gs.h / 5), 2, 2);
+          }
+        }
+      });
+
+      // Timing tower / control tower
+      const towerX = ((0.42 * structSpan + nearPan) % structSpan + structSpan) % structSpan - W * 0.5;
+      if (towerX > -30 && towerX < W + 30) {
+        ctx.fillStyle = "#555";
+        ctx.fillRect(towerX, horizon - 50, 14, 54);
+        ctx.fillStyle = "#444";
+        ctx.fillRect(towerX - 8, horizon - 54, 30, 8);
+        // Windows
+        ctx.fillStyle = "rgba(180,220,255,0.6)";
+        for (let tw = 0; tw < 3; tw++) {
+          ctx.fillRect(towerX + 2, horizon - 48 + tw * 12, 10, 6);
+        }
+      }
+
+      // Light gantry
+      const gantryX = ((0.18 * structSpan + nearPan) % structSpan + structSpan) % structSpan - W * 0.5;
+      if (gantryX > -20 && gantryX < W + 20) {
+        ctx.fillStyle = "#666";
+        ctx.fillRect(gantryX, horizon - 40, 4, 44);
+        ctx.fillRect(gantryX - 10, horizon - 42, 24, 4);
+        // Lights
+        ctx.fillStyle = "#f44";
+        for (let l = 0; l < 4; l++) ctx.fillRect(gantryX - 8 + l * 6, horizon - 40, 3, 3);
+      }
+
+      // Trees (scattered along horizon, various sizes)
+      ctx.fillStyle = "#4a6a3a";
+      const treeSpan = W * 5;
+      for (let t = 0; t < 20; t++) {
+        const baseX = (t / 20) * treeSpan;
+        const tx = ((baseX + treePan) % treeSpan + treeSpan) % treeSpan - W * 0.5;
+        if (tx < -20 || tx > W + 20) continue;
+        const treeH = 14 + (t * 7 % 16);
+        const trunkH = treeH * 0.35;
+        // Trunk
+        ctx.fillStyle = "#5a4a3a";
+        ctx.fillRect(tx, horizon - trunkH + 2, 3, trunkH);
+        // Canopy (layered circles)
+        ctx.fillStyle = `rgb(${55 + (t * 11 % 30)}, ${90 + (t * 7 % 30)}, ${45 + (t * 13 % 25)})`;
+        ctx.beginPath();
+        ctx.ellipse(tx + 1.5, horizon - treeH + 6, 7 + (t % 4), treeH * 0.45, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
 
       // Green grass horizon strip
       ctx.fillStyle = "#3a8a3a";
@@ -1242,7 +1336,7 @@ export default function App() {
           <div style={{ fontSize: "clamp(9px, 1.4vw, 11px)", color: "rgba(255,255,255,0.15)", letterSpacing: "5px" }}>SILVERSTONE GRAND PRIX</div>
           <div style={{ width: "30px", height: "2px", background: "#DC0000", margin: "10px 0" }} />
           <div style={{ fontSize: "clamp(9px, 1.1vw, 10px)", color: "rgba(255,255,255,0.15)", maxWidth: "340px", textAlign: "center", lineHeight: 1.7, marginBottom: "16px", padding: "0 12px" }}>
-            Cockpit racing around Silverstone. Answer 10 F1 history questions between laps. Get ALL right to win! Each wrong answer drops a position.
+            Cockpit racing around Silverstone. Start in P10 and fight your way to the front! Answer 10 F1 history questions — each correct answer gains a position. Get ALL right to win P1!
           </div>
           <button onClick={startRace} style={{ padding: "14px 40px", fontSize: "clamp(13px, 1.8vw, 16px)", fontWeight: "bold", fontFamily: "'Courier New', monospace", background: "#DC0000", color: "#fff", border: "none", borderRadius: "4px", cursor: "pointer", letterSpacing: "4px", boxShadow: "0 0 40px rgba(220,0,0,0.25)", minHeight: "48px" }}>
             START RACE
@@ -1316,7 +1410,7 @@ export default function App() {
           <div style={{ display: "flex", gap: "10px", marginBottom: "12px" }}>
             {[
               ["CORRECT", correctCount, "#4ade80", "of 10"],
-              ["POSITION", positionText(finalPosition), finalPosition === 1 ? "#FFD700" : "#fff", "of 6"],
+              ["POSITION", positionText(finalPosition), finalPosition === 1 ? "#FFD700" : "#fff", "of 10"],
             ].map(([label, value, color, sub], i) => (
               <div key={i} style={{ textAlign: "center", padding: "5px 12px", background: "rgba(255,255,255,0.02)", borderRadius: "4px", border: "1px solid rgba(255,255,255,0.035)" }}>
                 <div style={{ fontSize: "6px", letterSpacing: "2px", color: "rgba(255,255,255,0.12)" }}>{label}</div>

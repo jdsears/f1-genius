@@ -32,8 +32,12 @@ export const AI_CARS = [
   { name: "VER", color: "#2546FF" },
   { name: "NOR", color: "#FF8700" },
   { name: "LEC", color: "#E8002D" },
+  { name: "HAM", color: "#E8002D" },
   { name: "RUS", color: "#27F4D2" },
+  { name: "PIA", color: "#FF8700" },
+  { name: "SAI", color: "#00D2BE" },
   { name: "ALO", color: "#006F62" },
+  { name: "GAS", color: "#2293D1" },
 ];
 
 export const RENDER = {
