@@ -414,57 +414,27 @@ export default function App() {
       game.boostTimer = TUNING.BOOST_DURATION;
       game.targetSpeed = TUNING.BOOST_SPEED;
 
-      // OVERTAKE: find ALL cars we're passing (old position → new position)
-      // Cars with rank between newPosition and previousPosition-1 are being passed
-      const carsBeingPassed = game.aiCars
-        .filter(c => c.rank >= newPosition && c.rank < previousPosition)
-        .sort((a, b) => b.rank - a.rank); // closest first (highest rank = nearest)
+      // OVERTAKE: find the car we're passing (the one at our new position)
+      // With P10 start, each correct answer passes exactly one car
+      const carToPass = game.aiCars.find(c => c.rank === newPosition);
 
-      if (carsBeingPassed.length > 0) {
-        // The nearest car gets the dramatic close-pass animation
-        const nearestCar = carsBeingPassed[0];
-        nearestCar.segmentsAhead = 4; // snap close ahead
-        nearestCar.targetSegAhead = -4; // drift behind
-        nearestCar.overtaking = true;
+      if (carToPass) {
+        // Snap the car close ahead, then it drifts behind us
+        carToPass.segmentsAhead = 6;       // appear just ahead
+        carToPass.targetSegAhead = -6;     // drift well behind
+        carToPass.overtaking = true;
 
-        // Player swerves to opposite side
-        const passLane = nearestCar.lane > 0 ? -0.6 : 0.6;
+        // Player swerves to opposite side for dramatic pass
+        const passLane = carToPass.lane > 0 ? -0.7 : 0.7;
         game.playerLaneTarget = passLane;
-        nearestCar.targetLane = -passLane * 0.5;
-
-        // Other passed cars also move behind
-        carsBeingPassed.slice(1).forEach(car => {
-          car.targetSegAhead = -3 - (car.rank - newPosition) * 3;
-          car.overtaking = true;
-        });
+        carToPass.targetLane = -passLane * 0.6;
       }
     } else {
       if (soundRef.current) soundRef.current.wrong();
-      const newPosition = calcPosition(correctCount, questionIndex + 1);
-      const positionLost = newPosition > previousPosition;
-      setPosition(newPosition);
-
+      // Wrong answers don't change position — just slowdown + shake
       game.shakeTimer = TUNING.SHAKE_DURATION;
       game.brakeTimer = 50;
       game.targetSpeed = TUNING.SLOW_SPEED;
-
-      // DEMOTION: if we actually lost position, a car zooms past
-      if (positionLost) {
-        // Find cars that just passed us (ranks between old and new position)
-        const carsPassing = game.aiCars
-          .filter(c => c.rank >= previousPosition && c.rank < newPosition)
-          .sort((a, b) => a.rank - b.rank); // nearest first
-
-        if (carsPassing.length > 0) {
-          const passingCar = carsPassing[0];
-          passingCar.segmentsAhead = -1; // start just behind
-          passingCar.targetSegAhead = 8; // zoom past
-          passingCar.overtaking = true;
-          const passLane = game.playerLane > 0 ? -0.5 : 0.5;
-          passingCar.targetLane = passLane;
-          passingCar.lane = passLane;
-        }
-      }
     }
 
     setShowFact(true);
@@ -1360,25 +1330,25 @@ export default function App() {
 
       {/* ═══ QUESTION OVERLAY ═══ */}
       {gameState === GS.QUESTION && currentQuestion && (
-        <div style={{ position: "absolute", left: 0, right: 0, bottom: "15%", display: "flex", justifyContent: "center", zIndex: 20, padding: "0 8px", pointerEvents: "none" }}>
-          <div style={{ background: "rgba(6,6,14,0.92)", border: "1px solid rgba(220,0,0,0.16)", borderRadius: "8px", padding: "clamp(9px, 1.8vw, 14px)", maxWidth: "420px", width: "100%", boxShadow: "0 -6px 36px rgba(0,0,0,0.75)", backdropFilter: "blur(5px)", pointerEvents: "auto" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "2px" }}>
-              <span style={{ fontSize: "7px", letterSpacing: "2px", color: "#DC0000", fontWeight: "bold" }}>Q{questionIndex + 1}/10</span>
-              <span style={{ fontSize: "7px", letterSpacing: "2px", color: "rgba(255,255,255,0.12)" }}>{currentQuestion.era.toUpperCase()}</span>
+        <div style={{ position: "absolute", left: 0, right: 0, bottom: "10%", display: "flex", justifyContent: "center", zIndex: 20, padding: "0 12px", pointerEvents: "none" }}>
+          <div style={{ background: "rgba(6,6,14,0.94)", border: "1px solid rgba(220,0,0,0.2)", borderRadius: "10px", padding: "clamp(14px, 2.5vw, 20px)", maxWidth: "520px", width: "100%", boxShadow: "0 -8px 40px rgba(0,0,0,0.8)", backdropFilter: "blur(6px)", pointerEvents: "auto" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+              <span style={{ fontSize: "clamp(9px, 1.4vw, 12px)", letterSpacing: "2px", color: "#DC0000", fontWeight: "bold" }}>Q{questionIndex + 1}/10</span>
+              <span style={{ fontSize: "clamp(9px, 1.4vw, 12px)", letterSpacing: "2px", color: "rgba(255,255,255,0.18)" }}>{currentQuestion.era.toUpperCase()}</span>
             </div>
-            <div style={{ fontSize: "clamp(10px, 1.7vw, 13px)", color: "#fff", lineHeight: 1.4, marginBottom: "7px", fontWeight: "bold" }}>{currentQuestion.question}</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "3px" }}>
+            <div style={{ fontSize: "clamp(14px, 2.4vw, 18px)", color: "#fff", lineHeight: 1.5, marginBottom: "12px", fontWeight: "bold" }}>{currentQuestion.question}</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px" }}>
               {currentQuestion.options.map((option, i) => {
                 const revealed = selectedAnswer !== null;
                 const isCorrect = i === currentQuestion.correctIndex;
                 const isSelected = selectedAnswer === i;
-                let bg = "rgba(255,255,255,0.025)";
-                let border = "1px solid rgba(255,255,255,0.035)";
-                if (revealed && isCorrect) { bg = "rgba(74,222,128,0.15)"; border = "1px solid #4ade80"; }
-                else if (revealed && isSelected && !isCorrect) { bg = "rgba(220,0,0,0.15)"; border = "1px solid #DC0000"; }
+                let bg = "rgba(255,255,255,0.03)";
+                let border = "1px solid rgba(255,255,255,0.06)";
+                if (revealed && isCorrect) { bg = "rgba(74,222,128,0.18)"; border = "2px solid #4ade80"; }
+                else if (revealed && isSelected && !isCorrect) { bg = "rgba(220,0,0,0.18)"; border = "2px solid #DC0000"; }
                 return (
-                  <button key={i} onClick={() => handleAnswer(i)} disabled={revealed} style={{ padding: "10px 9px", fontSize: "clamp(11px, 1.6vw, 13px)", fontFamily: "'Courier New', monospace", background: bg, color: "#fff", border, borderRadius: "4px", cursor: revealed ? "default" : "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: "6px", minHeight: "44px" }}>
-                    <span style={{ width: "16px", height: "16px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "7px", fontWeight: "bold", flexShrink: 0, background: revealed && isCorrect ? "#4ade80" : revealed && isSelected ? "#DC0000" : "rgba(255,255,255,0.035)", color: revealed && (isCorrect || isSelected) ? "#fff" : "rgba(255,255,255,0.2)" }}>
+                  <button key={i} onClick={() => handleAnswer(i)} disabled={revealed} style={{ padding: "12px 12px", fontSize: "clamp(13px, 2vw, 16px)", fontFamily: "'Courier New', monospace", background: bg, color: "#fff", border, borderRadius: "6px", cursor: revealed ? "default" : "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: "8px", minHeight: "52px" }}>
+                    <span style={{ width: "22px", height: "22px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "10px", fontWeight: "bold", flexShrink: 0, background: revealed && isCorrect ? "#4ade80" : revealed && isSelected ? "#DC0000" : "rgba(255,255,255,0.05)", color: revealed && (isCorrect || isSelected) ? "#fff" : "rgba(255,255,255,0.25)" }}>
                       {revealed && isCorrect ? "✓" : revealed && isSelected && !isCorrect ? "✗" : String.fromCharCode(65 + i)}
                     </span>
                     {option}
@@ -1387,7 +1357,7 @@ export default function App() {
               })}
             </div>
             {showFact && (
-              <div style={{ marginTop: "5px", padding: "5px 7px", background: selectedAnswer === currentQuestion.correctIndex ? "rgba(74,222,128,0.05)" : "rgba(220,0,0,0.04)", border: `1px solid ${selectedAnswer === currentQuestion.correctIndex ? "rgba(74,222,128,0.09)" : "rgba(220,0,0,0.06)"}`, borderRadius: "3px", fontSize: "8px", color: "rgba(255,255,255,0.45)", lineHeight: 1.4 }}>
+              <div style={{ marginTop: "8px", padding: "8px 10px", background: selectedAnswer === currentQuestion.correctIndex ? "rgba(74,222,128,0.06)" : "rgba(220,0,0,0.05)", border: `1px solid ${selectedAnswer === currentQuestion.correctIndex ? "rgba(74,222,128,0.12)" : "rgba(220,0,0,0.08)"}`, borderRadius: "4px", fontSize: "clamp(10px, 1.5vw, 13px)", color: "rgba(255,255,255,0.5)", lineHeight: 1.5 }}>
                 <span style={{ fontWeight: "bold", color: selectedAnswer === currentQuestion.correctIndex ? "#4ade80" : "#DC0000" }}>
                   {selectedAnswer === currentQuestion.correctIndex ? "✓ " : "✗ "}
                 </span>
