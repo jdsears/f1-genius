@@ -46,6 +46,28 @@ function positionText(p) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// LEADERBOARD (localStorage)
+// ═══════════════════════════════════════════════════════════════
+
+const LB_KEY = "f1genius_leaderboard";
+
+function loadLeaderboard() {
+  try {
+    return JSON.parse(localStorage.getItem(LB_KEY) || "[]");
+  } catch { return []; }
+}
+
+function saveToLeaderboard(name, correctCount, position) {
+  const board = loadLeaderboard();
+  board.push({ name, correct: correctCount, position, date: Date.now() });
+  // Sort by most correct, then best position, keep top 10
+  board.sort((a, b) => b.correct - a.correct || a.position - b.position);
+  const trimmed = board.slice(0, 10);
+  localStorage.setItem(LB_KEY, JSON.stringify(trimmed));
+  return trimmed;
+}
+
+// ═══════════════════════════════════════════════════════════════
 // SOUND ENGINE (Web Audio API)
 // ═══════════════════════════════════════════════════════════════
 
@@ -301,6 +323,8 @@ export default function App() {
   const [finalPosition, setFinalPosition] = useState(10);
   const [cornerName, setCornerName] = useState("");
   const [raceProgress, setRaceProgress] = useState(0);
+  const [nickname, setNickname] = useState("");
+  const [leaderboard, setLeaderboard] = useState(() => loadLeaderboard());
 
   // ── Mutable game state (updated every frame, not re-rendering) ──
   const game = useRef({
@@ -600,6 +624,8 @@ export default function App() {
             const fp = calcPosition(correctCount, TUNING.QUESTIONS_PER_RACE);
             setFinalPosition(fp);
             setPosition(fp);
+            const updatedBoard = saveToLeaderboard(nickname || "ANON", correctCount, fp);
+            setLeaderboard(updatedBoard);
             setGameState(GS.FINISH);
             if (soundRef.current) { soundRef.current.chequered(); soundRef.current.stopEngine(); }
             if (fp === 1) confettiRef.current = createConfetti(150);
@@ -1308,7 +1334,17 @@ export default function App() {
           <div style={{ fontSize: "clamp(9px, 1.1vw, 10px)", color: "rgba(255,255,255,0.15)", maxWidth: "340px", textAlign: "center", lineHeight: 1.7, marginBottom: "16px", padding: "0 12px" }}>
             Cockpit racing around Silverstone. Start in P10 and fight your way to the front! Answer 10 F1 history questions — each correct answer gains a position. Get ALL right to win P1!
           </div>
-          <button onClick={startRace} style={{ padding: "14px 40px", fontSize: "clamp(13px, 1.8vw, 16px)", fontWeight: "bold", fontFamily: "'Courier New', monospace", background: "#DC0000", color: "#fff", border: "none", borderRadius: "4px", cursor: "pointer", letterSpacing: "4px", boxShadow: "0 0 40px rgba(220,0,0,0.25)", minHeight: "48px" }}>
+          <input
+            type="text"
+            value={nickname}
+            onChange={e => setNickname(e.target.value.toUpperCase().slice(0, 12))}
+            placeholder="ENTER NICKNAME"
+            maxLength={12}
+            style={{ width: "220px", padding: "10px 14px", fontSize: "clamp(13px, 1.8vw, 16px)", fontFamily: "'Courier New', monospace", background: "rgba(255,255,255,0.04)", color: "#fff", border: "1px solid rgba(220,0,0,0.3)", borderRadius: "4px", textAlign: "center", letterSpacing: "3px", marginBottom: "12px", outline: "none" }}
+            onFocus={e => e.target.style.borderColor = "#DC0000"}
+            onBlur={e => e.target.style.borderColor = "rgba(220,0,0,0.3)"}
+          />
+          <button onClick={startRace} disabled={!nickname.trim()} style={{ padding: "14px 40px", fontSize: "clamp(13px, 1.8vw, 16px)", fontWeight: "bold", fontFamily: "'Courier New', monospace", background: nickname.trim() ? "#DC0000" : "#333", color: "#fff", border: "none", borderRadius: "4px", cursor: nickname.trim() ? "pointer" : "not-allowed", letterSpacing: "4px", boxShadow: nickname.trim() ? "0 0 40px rgba(220,0,0,0.25)" : "none", minHeight: "48px", opacity: nickname.trim() ? 1 : 0.5 }}>
             START RACE
           </button>
         </div>
@@ -1370,14 +1406,15 @@ export default function App() {
 
       {/* ═══ FINISH SCREEN ═══ */}
       {gameState === GS.FINISH && (
-        <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.87)", zIndex: 20 }}>
+        <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.87)", zIndex: 20, overflowY: "auto", padding: "20px 0" }}>
           <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "4px", background: "repeating-linear-gradient(90deg, #fff 0px, #fff 10px, #111 10px, #111 20px)" }} />
           <div style={{ fontSize: "8px", letterSpacing: "5px", color: "rgba(255,255,255,0.12)" }}>🏁 CHEQUERED FLAG 🏁</div>
           <div style={{ fontSize: "clamp(30px, 8vw, 56px)", fontWeight: "bold", color: finalPosition === 1 ? "#FFD700" : finalPosition <= 3 ? "#ddd" : "#888", textShadow: finalPosition === 1 ? "0 0 50px rgba(255,215,0,0.4)" : "none" }}>{positionText(finalPosition)}</div>
-          <div style={{ fontSize: "clamp(10px, 1.8vw, 14px)", color: "rgba(255,255,255,0.28)", marginBottom: "12px" }}>
-            {finalPosition === 1 ? "🏆 RACE WINNER! 🏆" : finalPosition <= 3 ? "PODIUM FINISH!" : "CLASSIFIED FINISHER"}
+          <div style={{ fontSize: "clamp(10px, 1.8vw, 14px)", color: "rgba(255,255,255,0.28)", marginBottom: "8px" }}>
+            {nickname && <span style={{ color: "rgba(255,255,255,0.5)" }}>{nickname} — </span>}
+            {finalPosition === 1 ? "RACE WINNER!" : finalPosition <= 3 ? "PODIUM FINISH!" : "CLASSIFIED FINISHER"}
           </div>
-          <div style={{ display: "flex", gap: "10px", marginBottom: "12px" }}>
+          <div style={{ display: "flex", gap: "10px", marginBottom: "8px" }}>
             {[
               ["CORRECT", correctCount, "#4ade80", "of 10"],
               ["POSITION", positionText(finalPosition), finalPosition === 1 ? "#FFD700" : "#fff", "of 10"],
@@ -1389,12 +1426,36 @@ export default function App() {
               </div>
             ))}
           </div>
-          <div style={{ fontSize: "9px", color: "rgba(255,255,255,0.14)", marginBottom: "12px", textAlign: "center", maxWidth: "300px", lineHeight: 1.5 }}>
-            {correctCount === 10 ? "🏆 PERFECT! True F1 historian!" :
+          <div style={{ fontSize: "9px", color: "rgba(255,255,255,0.14)", marginBottom: "10px", textAlign: "center", maxWidth: "300px", lineHeight: 1.5 }}>
+            {correctCount === 10 ? "PERFECT! True F1 historian!" :
              correctCount >= 8 ? `So close! ${10 - correctCount} wrong — study the board!` :
              correctCount >= 5 ? "Good try! The history board has the answers." :
              "Study the history board and race again!"}
           </div>
+
+          {/* ── LEADERBOARD ── */}
+          {leaderboard.length > 0 && (
+            <div style={{ width: "min(340px, 90vw)", marginBottom: "12px" }}>
+              <div style={{ fontSize: "clamp(8px, 1.2vw, 10px)", letterSpacing: "4px", color: "#DC0000", textAlign: "center", marginBottom: "6px", fontWeight: "bold" }}>LEADERBOARD</div>
+              <div style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: "6px", overflow: "hidden" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "28px 1fr 50px 50px", padding: "6px 10px", fontSize: "7px", letterSpacing: "2px", color: "rgba(255,255,255,0.2)", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                  <span>#</span><span>DRIVER</span><span style={{ textAlign: "center" }}>SCORE</span><span style={{ textAlign: "center" }}>POS</span>
+                </div>
+                {leaderboard.map((entry, i) => {
+                  const isCurrentRace = entry.name === (nickname || "ANON") && entry.correct === correctCount && entry.position === finalPosition;
+                  return (
+                    <div key={i} style={{ display: "grid", gridTemplateColumns: "28px 1fr 50px 50px", padding: "5px 10px", fontSize: "clamp(10px, 1.4vw, 13px)", fontFamily: "'Courier New', monospace", color: i === 0 ? "#FFD700" : i < 3 ? "#ddd" : "rgba(255,255,255,0.5)", background: isCurrentRace ? "rgba(220,0,0,0.08)" : "transparent", borderBottom: i < leaderboard.length - 1 ? "1px solid rgba(255,255,255,0.02)" : "none" }}>
+                      <span style={{ color: i === 0 ? "#FFD700" : i < 3 ? "#DC0000" : "rgba(255,255,255,0.2)", fontWeight: "bold" }}>{i + 1}</span>
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{entry.name}</span>
+                      <span style={{ textAlign: "center", color: entry.correct === 10 ? "#4ade80" : "inherit" }}>{entry.correct}/10</span>
+                      <span style={{ textAlign: "center" }}>{positionText(entry.position)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <button onClick={() => { setGameState(GS.START); confettiRef.current = null; }} style={{ padding: "12px 32px", fontSize: "clamp(11px, 1.5vw, 14px)", fontWeight: "bold", fontFamily: "'Courier New', monospace", background: "#DC0000", color: "#fff", border: "none", borderRadius: "4px", cursor: "pointer", letterSpacing: "3px", boxShadow: "0 0 30px rgba(220,0,0,0.25)", minHeight: "48px" }}>
             RACE AGAIN
           </button>
